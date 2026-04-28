@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/snlds-core", "crates/snlds-data"]
+resolver = "2"

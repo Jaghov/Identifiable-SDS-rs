@@ -1,0 +1,3 @@
+[env]
+# CubeCL JIT-compiles kernels at first use; debug builds need a larger thread stack.
+RUST_MIN_STACK = "33554432"

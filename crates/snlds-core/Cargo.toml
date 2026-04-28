@@ -1,0 +1,7 @@
+[package]
+name = "snlds-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+burn = { version = "0.20.1", features = ["cpu", "autodiff"] }
