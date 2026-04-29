@@ -48,6 +48,12 @@ pub fn run_warm_start<B: AutodiffBackend>(
     obs_train_array: &Array3<f32>,
     device: &B::Device,
 ) -> anyhow::Result<VariationalSnlds<B>> {
+    anyhow::ensure!(
+        config.restarts > 0,
+        "--msm-restarts must be > 0 (got {})",
+        config.restarts
+    );
+
     let reduced = pca_fit_transform(obs_train_array, snlds_config.latent_dim)
         .context("PCA reduction for MSM warm-start")?;
 
@@ -62,7 +68,7 @@ pub fn run_warm_start<B: AutodiffBackend>(
         .with_hidden_dim(config.hidden_dim);
 
     let mut best: Option<(f32, NeuralMsm<B>)> = None;
-    for restart_idx in 0..config.restarts.max(1) {
+    for restart_idx in 0..config.restarts {
         let initial = msm_config.init::<B>(device);
         let (fitted, history) = initial.fit(
             reduced_tensor.clone(),
@@ -83,7 +89,8 @@ pub fn run_warm_start<B: AutodiffBackend>(
         }
     }
 
-    let (_, best_msm) = best.expect("at least one MSM restart should produce a model");
+    let (_, best_msm) =
+        best.expect("loop body assigns best on first iter when restarts > 0 (ensured above)");
     let snlds = snlds_config.init::<B>(device);
     let warm_started = transfer_into_snlds(best_msm, snlds)
         .context("transfer MSM parameters into VariationalSnlds")?;

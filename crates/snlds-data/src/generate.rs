@@ -96,7 +96,7 @@ fn generate_split(
 }
 
 fn rand_leaky(rng: &mut ChaCha8Rng, dim_obs: usize, dim_latent: usize) -> LeakyParams {
-    let weight_dist = Normal::new(0.0f32, 0.5).unwrap();
+    let weight_dist = Normal::new(0.0f32, 0.5).expect("std=0.5 is a positive literal");
     let mut alphas = Array2::<f32>::zeros((dim_obs, EMISSION_HIDDEN_DIM));
     let mut omegas = Array2::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent));
     let mut betas = Array1::<f32>::zeros(EMISSION_HIDDEN_DIM);
@@ -167,9 +167,9 @@ fn roll_sequences(
     let mut obs = Array3::<f32>::zeros((n, seq_len, cfg.dim_obs));
     let mut states = Array2::<i32>::zeros((n, seq_len));
 
-    let init_noise = Normal::new(0.0f32, 0.1).unwrap();
+    let init_noise = Normal::new(0.0f32, 0.1).expect("std=0.1 is a positive literal");
     let init_means: Array2<f32> = {
-        let normal = Normal::new(0.0f32, 0.7).unwrap();
+        let normal = Normal::new(0.0f32, 0.7).expect("std=0.7 is a positive literal");
         let mut m = Array2::<f32>::zeros((k, dim_latent));
         for s in 0..k {
             for j in 0..dim_latent {
@@ -194,13 +194,19 @@ fn roll_sequences(
 
     let scale_var = 0.05f32;
     let scale_std = scale_var.sqrt();
-    let step_noise = Normal::new(0.0f32, scale_std).unwrap();
+    let step_noise =
+        Normal::new(0.0f32, scale_std).expect("scale_std = sqrt(0.05) > 0 by construction");
 
     for ti in 1..seq_len {
         for ni in 0..n {
             let prev_state = states[[ni, ti - 1]] as usize;
             let trans_probs = q.row(prev_state);
-            let next_state = sample_from_probs(rng, trans_probs.as_slice().unwrap());
+            let next_state = sample_from_probs(
+                rng,
+                trans_probs
+                    .as_slice()
+                    .expect("q built by Array2::zeros is row-major; row view has unit stride"),
+            );
             states[[ni, ti]] = next_state as i32;
 
             let z_prev = latents.slice(s![ni, ti - 1, ..]);
@@ -228,7 +234,7 @@ fn rand_cosine_state(
     dim_latent: usize,
     sparsity_prob: f32,
 ) -> CosineStateParams {
-    let weight_dist = Normal::new(0.0f32, 0.5).unwrap();
+    let weight_dist = Normal::new(0.0f32, 0.5).expect("std=0.5 is a positive literal");
     let mut alphas = Array3::<f32>::zeros((1, dim_latent, EMISSION_HIDDEN_DIM));
     let mut omegas = Array3::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent, dim_latent));
     let mut betas = Array2::<f32>::zeros((dim_latent, EMISSION_HIDDEN_DIM));
