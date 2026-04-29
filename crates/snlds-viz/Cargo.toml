@@ -1,0 +1,18 @@
+[package]
+name = "snlds-viz"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "snlds-viz"
+path = "src/bin/snlds-viz.rs"
+
+[dependencies]
+snlds-data = { path = "../snlds-data" }
+rerun = { version = "0.31", default-features = false, features = ["sdk"] }
+ndarray = { version = "0.16", features = ["std"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
