@@ -3,7 +3,10 @@
 //! **`encode_safetensors`** holds per-tensor staging **`Vec<u8>`** buffers for one
 //! **`safetensors::serialize`** call; **`TensorView`** borrows those slices (no **`Box::leak`**).
 
-use crate::generate::TrainTest;
+use crate::generate::{
+    TrainTest, DEFAULT_INIT_MEAN_STD, DEFAULT_INIT_NOISE_STD, DEFAULT_TRANSITION_STEP_VAR,
+};
+use crate::transitions::EMISSION_HIDDEN_DIM;
 use anyhow::Context;
 use ndarray::ArrayViewD;
 use safetensors::tensor::{Dtype, TensorView};
@@ -12,13 +15,30 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 
 /// Bump history:
+/// - **v4** (2026-04-29): persist simulator hyperparameters that were previously
+///   hardcoded in `generate.rs`: `init_noise_std`, `init_mean_std`, `transition_step_var`,
+///   `emission_hidden_dim`. v3 manifests on disk still load — the new fields fall back
+///   to the v3-era hardcoded defaults via `serde(default = "...")`.
 /// - **v3** (2026-04-29): persist ground-truth Markov transition matrix `q_true` `[K, K]` and
 ///   initial distribution `pi_true` `[K]` so downstream viz / eval tools can compare against
 ///   a learned `Q`. Tensor names: `q_true`, `pi_true`.
 /// - **v2** (M1): `states_*` stored as **`I32`** alongside the existing F32 tensors.
 /// - **v1** (initial M1): `latents_*`, `obs_*` as `F32` and `states_*` accidentally as `F32`
 ///   (mirrored a Python `float64` layout); replaced by v2.
-pub const MANIFEST_SCHEMA_VERSION: u32 = 3;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 4;
+
+fn default_init_noise_std() -> f32 {
+    DEFAULT_INIT_NOISE_STD
+}
+fn default_init_mean_std() -> f32 {
+    DEFAULT_INIT_MEAN_STD
+}
+fn default_transition_step_var() -> f32 {
+    DEFAULT_TRANSITION_STEP_VAR
+}
+fn default_emission_hidden_dim() -> usize {
+    EMISSION_HIDDEN_DIM
+}
 
 /// Run metadata written next to `sequences.safetensors`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -35,6 +55,27 @@ pub struct Manifest {
     pub data_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub degree: Option<usize>,
+    /// Std-dev of the Gaussian jitter on `z_0` used by the simulator.
+    /// Default applied when loading a pre-v4 manifest (matches the v3-era hardcoded
+    /// simulator constant [`crate::generate::DEFAULT_INIT_NOISE_STD`] = 0.1).
+    #[serde(default = "default_init_noise_std")]
+    pub init_noise_std: f32,
+    /// Std-dev of the per-state init-mean prior used by the simulator.
+    /// Default applied when loading a pre-v4 manifest (matches the v3-era hardcoded
+    /// simulator constant [`crate::generate::DEFAULT_INIT_MEAN_STD`] = 0.7).
+    #[serde(default = "default_init_mean_std")]
+    pub init_mean_std: f32,
+    /// Variance of the transition step noise added to `z_t` each step.
+    /// (variance, not std-dev — fed to `Normal::new` as `sqrt(var)`.)
+    /// Default applied when loading a pre-v4 manifest (matches the v3-era hardcoded
+    /// simulator constant [`crate::generate::DEFAULT_TRANSITION_STEP_VAR`] = 0.05).
+    #[serde(default = "default_transition_step_var")]
+    pub transition_step_var: f32,
+    /// Hidden dimension of the simulator's leaky-ReLU emission network.
+    /// Default applied when loading a pre-v4 manifest (matches the v3-era hardcoded
+    /// simulator constant [`crate::transitions::EMISSION_HIDDEN_DIM`] = 8).
+    #[serde(default = "default_emission_hidden_dim")]
+    pub emission_hidden_dim: usize,
 }
 
 /// Write `sequences.safetensors` and `metadata.json` into `out_dir`.

@@ -1,6 +1,6 @@
 # PRD: Port identifiable-SDS (SNLDS) to Burn
 
-**Document version:** 1.17  
+**Document version:** 1.18  
 **Last updated:** 2026-04-29  
 **Status:** Draft (living document)
 
@@ -22,6 +22,7 @@ This file is the **single source of truth** for the Burn port. **Update it when 
 
 | Date       | Version | Summary |
 |------------|---------|---------|
+| 2026-04-29 | 1.18    | **M1 schema v4 / simulator hparams:** surface `init_noise_std`, `init_mean_std`, `transition_step_var`, `emission_hidden_dim`, `initial_distribution` on `GenConfig`; persist the four scalars in `Manifest`; bump `MANIFEST_SCHEMA_VERSION` to **4** with serde defaults so v3 files still load. `EMISSION_HIDDEN_DIM` becomes a default, not a fixed constant. See [docs/M1.md](M1.md) and [docs/CLEANUP-hardcoded-values.md](CLEANUP-hardcoded-values.md) PR 3. |
 | 2026-04-29 | 1.17    | **Train/eval config snapshot:** `snlds-train` adds `obs_noise_var` to `TrainConfig` + CLI and writes `<output_dir>/train_config.json` (`hidden_dim`, `beta`, `temperature`, `obs_noise_var`); `snlds-eval` reads it automatically with optional overrides. M1 doc block now lists v1 history. |
 | 2026-04-29 | 1.16    | **M-Viz+ extension (feat/m-viz-graphs):** Markov-chain graph view + Figure-6-style segmentation panels in `snlds-viz` (`log_transition_matrix`, `log_state_strip`, `log_gamma_heatmap`, palettes in `colormap.rs`); **new `snlds-eval` crate/binary** consumes a checkpoint and logs `q_inferred` + posteriors; **M1 schema v3** persists `q_true`/`pi_true`. Trackers: [M1.md](M1.md), [M-Viz+.md](M-Viz+.md). |
 | 2026-04-29 | 1.15    | **M5** merged + **M6** explicitly deferred: tracker [M5.md](M5.md); `snlds-msm` crate (linfa-reduction PCA + simplified NeuralMSM) + `snlds-train --msm-init`; §8.2/§8.5 updated; §9 status. |
@@ -283,6 +284,7 @@ _When resolved, move outcomes here or to §8.5 and note in changelog._
 
 | Version | Date       | Notes |
 |---------|------------|-------|
+| 1.18    | 2026-04-29 | **M1 schema v4**: simulator hparams on `GenConfig` + `Manifest`; configurable `initial_distribution`; `EMISSION_HIDDEN_DIM` demoted to default; v3 manifests still load. |
 | 1.15    | 2026-04-29 | **M5** merged (`snlds-msm`, `--msm-init`); **M6** explicitly deferred; §8.2 / §8.5 deps add **`linfa`** / **`linfa-reduction`**. |
 | 1.14    | 2026-04-29 | **M-Viz+** + **M4** merged; §9 table + §12 checkpoint partial resolve; changelog 1.14. |
 | 1.13    | 2026-04-29 | Milestone trackers M-Viz, M3, M-Viz+, M4, M5, M6; §9 links + table footnotes. |

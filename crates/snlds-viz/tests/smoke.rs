@@ -20,6 +20,7 @@ fn tiny_cfg() -> (GenConfig, Manifest) {
         sparsity_prob: 0.0,
         kind: SimulatorKind::Cosine,
         poly_degree: 3,
+        ..GenConfig::default()
     };
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -32,6 +33,10 @@ fn tiny_cfg() -> (GenConfig, Manifest) {
         sparsity_prob: cfg.sparsity_prob,
         data_type: "cosine".to_string(),
         degree: None,
+        init_noise_std: cfg.init_noise_std,
+        init_mean_std: cfg.init_mean_std,
+        transition_step_var: cfg.transition_step_var,
+        emission_hidden_dim: cfg.emission_hidden_dim,
     };
     (cfg, manifest)
 }
@@ -111,7 +116,7 @@ fn cli_smoke_writes_rrd() {
     let rrd_path = dir.path().join("out.rrd");
 
     let (cfg, manifest) = tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).expect("generate dataset");
     save_train_test(&input_dir, &tt, &manifest).expect("save dataset");
 
     let bin = env!("CARGO_BIN_EXE_snlds-viz");
@@ -139,7 +144,7 @@ fn cli_render_flag_with_dim_latent_2() {
     let rrd_path = dir.path().join("out_render.rrd");
 
     let (cfg, manifest) = tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).expect("generate dataset");
     save_train_test(&input_dir, &tt, &manifest).expect("save dataset");
 
     let bin = env!("CARGO_BIN_EXE_snlds-viz");

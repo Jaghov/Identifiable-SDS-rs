@@ -58,6 +58,11 @@ pub fn func_leaky_relu_batch(z: ArrayView2<f32>, params: &LeakyParams) -> Array2
 }
 
 /// Cosine dynamics for one discrete state (`params[k]` tuple in Python).
+///
+/// **Invariant:** the hidden-dim axis must agree across all three weight tensors —
+/// `alphas.dim().2 == omegas.dim().0 == betas.dim().1`. `func_cosine_with_sparsity`
+/// reads `H` from `alphas` and indexes `omegas` on axis 0 and `betas` on axis 1
+/// using that same value; mismatched shapes panic at index time.
 #[derive(Clone, Debug)]
 pub struct CosineStateParams {
     /// `(1, dim_latent, H)`
@@ -71,14 +76,25 @@ pub struct CosineStateParams {
 
 pub fn func_cosine_with_sparsity(x: ArrayView1<f32>, feat: &CosineStateParams) -> Array1<f32> {
     let dim_lat = x.len();
+    let hidden_dim = feat.alphas.dim().2;
+    debug_assert_eq!(
+        feat.alphas.dim().2,
+        feat.omegas.dim().0,
+        "CosineStateParams hidden dim mismatch: alphas axis 2 vs omegas axis 0"
+    );
+    debug_assert_eq!(
+        feat.alphas.dim().2,
+        feat.betas.dim().1,
+        "CosineStateParams hidden dim mismatch: alphas axis 2 vs betas axis 1"
+    );
     let mut out = Array1::<f32>::zeros(dim_lat);
     for i in 0..dim_lat {
         let mut masked_x = Array1::<f32>::zeros(dim_lat);
         for j in 0..dim_lat {
             masked_x[j] = x[j] * feat.adj[[i, j]];
         }
-        let mut cosine_features = [0f32; EMISSION_HIDDEN_DIM];
-        for k in 0..EMISSION_HIDDEN_DIM {
+        let mut cosine_features = vec![0f32; hidden_dim];
+        for k in 0..hidden_dim {
             let mut pre_act = 0f32;
             for j in 0..dim_lat {
                 pre_act += feat.omegas[[k, i, j]] * masked_x[j];
@@ -86,7 +102,7 @@ pub fn func_cosine_with_sparsity(x: ArrayView1<f32>, feat: &CosineStateParams) -
             cosine_features[k] = (pre_act + feat.betas[[i, k]]).cos();
         }
         let mut weighted_sum = 0f32;
-        for k in 0..EMISSION_HIDDEN_DIM {
+        for k in 0..hidden_dim {
             weighted_sum += feat.alphas[[0, i, k]] * cosine_features[k];
         }
         out[i] = weighted_sum;
