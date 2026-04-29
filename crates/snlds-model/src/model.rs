@@ -9,10 +9,20 @@ use std::f32::consts::PI;
 
 const COV_EPS: f32 = 1e-6;
 
-/// Configuration for [`VariationalSnlds`].
+/// Layout configuration for [`VariationalSnlds`].
 ///
-/// All scalar hyper-parameters live here; the Module only stores differentiable sub-modules and
-/// parameter tensors.
+/// All **structural** hyper-parameters (tensor shapes, MLP widths, `K`) live here; the
+/// `Module` only stores differentiable sub-modules and parameter tensors.
+///
+/// # Note
+///
+/// **Runtime scalars are deliberately *not* on this struct.** `beta` (KL weight),
+/// `obs_noise_var` (fixed σ² for the Gaussian decoder likelihood), and `temperature`
+/// (Gumbel-softmax annealing) are passed to [`VariationalSnlds::forward`] at every
+/// step so callers can anneal them. The `snlds-train` crate owns these values via
+/// its `TrainConfig` and persists them in `train_config.json` next to checkpoints
+/// (see the `snlds-train::snapshot` module) so that `snlds-eval` can reproduce the
+/// same numbers without a second source of truth.
 #[derive(Config, Debug)]
 pub struct SnldsConfig {
     /// Observation dimension.
@@ -23,12 +33,6 @@ pub struct SnldsConfig {
     pub hidden_dim: usize,
     /// Number of discrete states K.
     pub num_states: usize,
-    /// KL weight β (set to 0 to disable the MSM term during debugging).
-    #[config(default = "1.0")]
-    pub beta: f32,
-    /// Fixed observation noise variance (σ²) — matches Python `var = 5e-4`.
-    #[config(default = "5e-4")]
-    pub obs_noise_var: f32,
 }
 
 impl SnldsConfig {
@@ -296,7 +300,21 @@ impl<B: Backend> VariationalSnlds<B> {
 
     /// Full forward pass.
     ///
-    /// `temperature` scales Q and π logits (default 1.0; anneal toward 0 during training).
+    /// # Arguments
+    ///
+    /// - `obs`: observation tensor `[N, T, obs_dim]`.
+    /// - `beta`: KL weight on the discrete-state ELBO term. Must be `> 0` for the
+    ///   forward pass to populate `state_posteriors`; setting `beta = 0` disables the
+    ///   MSM term entirely (useful for debugging the encoder/decoder in isolation).
+    /// - `obs_noise_var`: fixed observation noise variance σ² scaling the squared-error
+    ///   term in the Gaussian decoder log-likelihood. The Python reference uses `5e-4`;
+    ///   `snlds-train` accepts it on the CLI and persists it to `train_config.json` so
+    ///   `snlds-eval` reproduces the same number without a second source of truth.
+    /// - `temperature`: scales `Q` and `π` logits (default 1.0; anneal toward 0
+    ///   during training).
+    ///
+    /// See the `# Note` section on [`SnldsConfig`] for why these scalars are not on
+    /// the config struct.
     pub fn forward(
         &self,
         obs: Tensor<B, 3>,
