@@ -68,3 +68,4 @@ Who does what so two assistants do not trample the same files or PR scope. **Upd
 |------------|------|
 | 2026-04-29 | Note **`snlds-train`** (M4) merged; doc slice C6/C7 are trackers, not pending code. |
 | 2026-04-29 | Initial split; `docs/` tracked in git. |
+| 2026-04-29 | **`snlds-eval`** crate added (Cursor-agent owned) for inferred-Q + posteriors logging; M-Viz+ extended with Markov-chain graph + Figure-6-style segmentation panels; M1 schema bumped to v3 (`q_true`, `pi_true`). |

@@ -26,6 +26,12 @@ Reuse **M-Viz** paths for \(z_t\), \(x_t\), \(s_t\) where ground truth exists. *
 | `snlds/train/elbo` | `Scalars::single` | ELBO (caller-defined sign; typically maximised ELBO) on timeline **`train_step`** |
 | `snlds/train/mse` | `Scalars::single` | Scalar passed by caller (e.g. reconstruction MSE) |
 | `snlds/train/temperature` | `Scalars::single` | Temperature |
+| `snlds/markov/q_true` (nodes + edges) | `GraphNodes` + `GraphEdges` (Directed) | Ground-truth Markov chain — nodes `s0..s{K-1}` colored from the categorical state palette, edges `i → j` filtered by `\|q_{ij}\| ≥ TRANSITION_EDGE_EPSILON` |
+| `snlds/markov/q_true/weights` | `Image` (RGB U8, viridis) | `[K, K]` heatmap of `q_true` for exact transition probabilities (graph view drops edge labels) |
+| `snlds/markov/q_inferred` (+ `/weights`) | same as above | Same layout for the **softmax(`q_logits`)** of a trained model — logged by `snlds-eval` |
+| `snlds/state/strip_true` | `Image` (RGB U8) | `STATE_STRIP_HEIGHT × T` colored band of true `s_t` (Figure-6-style segmentation), per `sequence` |
+| `snlds/state/strip_inferred` | `Image` (RGB U8) | Same band for **argmax(γ_t)** of a trained model — logged by `snlds-eval` |
+| `snlds/state/gamma` | `Image` (RGB U8, viridis) | `K × T` posterior heatmap (rows = states), per `sequence` |
 
 Align with PRD [§5.4](PRD-burn-port.md#54-visualization-rerun): **paper-style** discrete-state plots (\(\gamma_{t,k}\) vs \(t\)); **overlay** with true \(s_t\) when **[M1](M1.md)** labels exist. **Stride** or **subsample** logging to control **log volume** ([PRD §6](PRD-burn-port.md#6-non-functional-requirements)).
 
@@ -76,6 +82,7 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 | Item | Description |
 |------|-------------|
 | 2026-04-29 | **Merged:** `snlds-viz` exposes `log_posteriors`, `log_reconstructions`, `log_train_scalars` + smoke tests. Entity paths use `gamma_{k}` (indexed), not a literal `gamma_k` suffix. |
+| 2026-04-29 | **Markov + segmentation views (feat/m-viz-graphs):** new `snlds-viz` API `log_transition_matrix` (graph + sibling weight heatmap), `log_state_strip`, `log_gamma_heatmap`; centralised palettes/anchors in `crates/snlds-viz/src/colormap.rs`. `snlds-viz` binary surfaces `q_true` graph + `strip_true` per sequence. New **`snlds-eval`** crate consumes a checkpoint and logs `q_inferred`, `strip_inferred`, `snlds/state/gamma` heatmap, and reconstructions. |
 
 ---
 
@@ -85,3 +92,4 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 |------------|------|
 | 2026-04-29 | **Merged** — implementation checkpoint + residual follow-ups (training CLI `--viz`, overlay test). |
 | 2026-04-29 | Initial tracker (aligned with M-Viz / M3). |
+| 2026-04-29 | Added Markov-chain graph + Figure-6-style segmentation panels (`log_transition_matrix`, `log_state_strip`, `log_gamma_heatmap`) and `snlds-eval` binary for inferred-Q comparison. |

@@ -163,7 +163,8 @@ fn safetensors_roundtrip_all_tensors_and_metadata() {
     let st_path = dir.path().join("sequences.safetensors");
     let bytes = fs::read(&st_path).unwrap();
     let st = SafeTensors::deserialize(&bytes).unwrap();
-    assert_eq!(st.len(), 6);
+    // Schema v3: 6 sequence tensors + q_true + pi_true.
+    assert_eq!(st.len(), 8);
 
     let assert_f32_eq = |name: &str, got: &[f32]| {
         let loaded = load_tensor_f32(&st_path, name).unwrap();
@@ -191,6 +192,42 @@ fn safetensors_roundtrip_all_tensors_and_metadata() {
         load_tensor_i32(&st_path, "states_test").unwrap(),
         tt.states_test.iter().copied().collect::<Vec<_>>()
     );
+    assert_f32_eq("q_true", &tt.q_true.iter().copied().collect::<Vec<_>>());
+    assert_f32_eq("pi_true", &tt.pi_true.iter().copied().collect::<Vec<_>>());
+}
+
+#[test]
+fn safetensors_persists_q_and_pi_true() {
+    let cfg = cosine_tiny_cfg();
+    let tt = generate_train_test(&cfg);
+    let dir = tempdir().unwrap();
+    let manifest = Manifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        seed: cfg.seed,
+        num_states: cfg.num_states,
+        dim_obs: cfg.dim_obs,
+        dim_latent: cfg.dim_latent,
+        seq_length: cfg.seq_length,
+        num_samples: cfg.num_samples,
+        sparsity_prob: cfg.sparsity_prob,
+        data_type: "cosine".into(),
+        degree: None,
+    };
+    save_train_test(dir.path(), &tt, &manifest).unwrap();
+    let st_path = dir.path().join("sequences.safetensors");
+
+    // q_true matches the deterministic cyclic constructor.
+    let q_loaded = load_tensor_f32(&st_path, "q_true").unwrap();
+    let q_expected: Vec<f32> = get_trans_mat(cfg.num_states).iter().copied().collect();
+    assert_eq!(q_loaded, q_expected);
+
+    // pi_true is uniform 1/K.
+    let pi_loaded = load_tensor_f32(&st_path, "pi_true").unwrap();
+    let expected_value = 1.0_f32 / cfg.num_states as f32;
+    assert!(pi_loaded
+        .iter()
+        .all(|value| (value - expected_value).abs() < 1e-6));
+    assert_eq!(pi_loaded.len(), cfg.num_states);
 }
 
 #[test]

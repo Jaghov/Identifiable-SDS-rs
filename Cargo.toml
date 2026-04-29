@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/snlds-core", "crates/snlds-data", "crates/snlds-viz", "crates/snlds-model", "crates/snlds-train", "crates/snlds-msm"]
+members = ["crates/snlds-core", "crates/snlds-data", "crates/snlds-viz", "crates/snlds-model", "crates/snlds-train", "crates/snlds-msm", "crates/snlds-eval"]
 resolver = "2"

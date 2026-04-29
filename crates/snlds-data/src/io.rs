@@ -11,7 +11,12 @@ use safetensors::SafeTensors;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// Bump history:
+/// - **v3** (2026-04-29): persist ground-truth Markov transition matrix `q_true` `[K, K]` and
+///   initial distribution `pi_true` `[K]` so downstream viz / eval tools can compare against
+///   a learned `Q`. Tensor names: `q_true`, `pi_true`.
+/// - **v2** (M1): `states_*` stored as **`I32`** alongside the existing F32 tensors.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 3;
 
 /// Run metadata written next to `sequences.safetensors`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -84,6 +89,8 @@ fn encode_safetensors(tt: &TrainTest) -> anyhow::Result<Vec<u8>> {
     let (sh_ote, b_ote) = pack_dyn_f32(tt.obs_test.view().into_dyn())?;
     let (sh_st, b_st) = pack_dyn_i32(tt.states_train.view().into_dyn())?;
     let (sh_ste, b_ste) = pack_dyn_i32(tt.states_test.view().into_dyn())?;
+    let (sh_q, b_q) = pack_dyn_f32(tt.q_true.view().into_dyn())?;
+    let (sh_pi, b_pi) = pack_dyn_f32(tt.pi_true.view().into_dyn())?;
 
     let tensors: Vec<(&str, TensorView<'_>)> = vec![
         ("latents_train", tensor_view(Dtype::F32, sh_lt, &b_lt)?),
@@ -92,6 +99,8 @@ fn encode_safetensors(tt: &TrainTest) -> anyhow::Result<Vec<u8>> {
         ("obs_test", tensor_view(Dtype::F32, sh_ote, &b_ote)?),
         ("states_train", tensor_view(Dtype::I32, sh_st, &b_st)?),
         ("states_test", tensor_view(Dtype::I32, sh_ste, &b_ste)?),
+        ("q_true", tensor_view(Dtype::F32, sh_q, &b_q)?),
+        ("pi_true", tensor_view(Dtype::F32, sh_pi, &b_pi)?),
     ];
     safetensors::serialize(tensors, &None).map_err(Into::into)
 }

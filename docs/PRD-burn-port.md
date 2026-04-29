@@ -1,6 +1,6 @@
 # PRD: Port identifiable-SDS (SNLDS) to Burn
 
-**Document version:** 1.15  
+**Document version:** 1.16  
 **Last updated:** 2026-04-29  
 **Status:** Draft (living document)
 
@@ -22,6 +22,7 @@ This file is the **single source of truth** for the Burn port. **Update it when 
 
 | Date       | Version | Summary |
 |------------|---------|---------|
+| 2026-04-29 | 1.16    | **M-Viz+ extension (feat/m-viz-graphs):** Markov-chain graph view + Figure-6-style segmentation panels in `snlds-viz` (`log_transition_matrix`, `log_state_strip`, `log_gamma_heatmap`, palettes in `colormap.rs`); **new `snlds-eval` crate/binary** consumes a checkpoint and logs `q_inferred` + posteriors; **M1 schema v3** persists `q_true`/`pi_true`. Trackers: [M1.md](M1.md), [M-Viz+.md](M-Viz+.md). |
 | 2026-04-29 | 1.15    | **M5** merged + **M6** explicitly deferred: tracker [M5.md](M5.md); `snlds-msm` crate (linfa-reduction PCA + simplified NeuralMSM) + `snlds-train --msm-init`; §8.2/§8.5 updated; §9 status. |
 | 2026-04-29 | 1.14    | **M-Viz+** + **M4** merged: trackers [M-Viz+.md](M-Viz+.md), [M4.md](M4.md) updated; §9 status; **`snlds-train`** / **`CompactRecorder`** checkpoint note in §12. |
 | 2026-04-29 | 1.13    | Milestone trackers [M-Viz](M-Viz.md), [M3](M3.md), [M-Viz+](M-Viz+.md), [M4](M4.md), [M5](M5.md), [M6](M6.md); §9 links + table footnotes. |
@@ -137,7 +138,7 @@ Port the **Switching Nonlinear Dynamical System (SNLDS)** training stack from th
 
 ## 7. Technical design (high level)
 
-- **crate layout:** e.g. `snlds-model` (Burn `Module`s + kernels), `snlds-data` (pure Rust simulation + IO), `snlds-train` (CLI + loops), optional `msm` submodule for NeuralMSM, optional `snlds-viz` or `train` feature flag wiring **[Rerun](https://www.rerun.io/docs/getting-started/quick-start/rust)**.
+- **crate layout:** `snlds-core` (HMM kernels), `snlds-model` (Burn `Module`s), `snlds-data` (pure Rust simulation + IO), `snlds-train` (CLI + loops), `snlds-msm` (NeuralMSM warm-start), `snlds-viz` (ground-truth Rerun logging + binary), `snlds-eval` (checkpoint → inferred Rerun logging binary).
 - **Burn:** Core tensor ops, autodiff, optimizers (`burn::optim`), module derive macros; backend trait `Backend` parameterized throughout.
 - **Rerun:** Use the official Rust SDK crate (**`rerun`**, `features` as needed) to record streams; view with the **Rerun viewer** (desktop or browser). Optional: `spawn` viewer from training binary behind `--viz` / `RERUN` env.
 - **Checkpointing:** Burn `Recorder` / built-in persistence, or **`safetensors`** + manifest if interoperability matters.
