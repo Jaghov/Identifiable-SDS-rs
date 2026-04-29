@@ -2,7 +2,7 @@
 
 **PRD:** [§9 Milestones](PRD-burn-port.md#9-milestones) (row **M-Viz**), [§5.4 Visualization](PRD-burn-port.md#54-visualization-rerun).
 
-**Status:** planned — checkboxes open until implementation merges.
+**Status:** ✅ complete — merged to main 2026-04-29.
 
 ---
 
@@ -92,14 +92,14 @@ snlds-viz --input <dir>            # dir containing sequences.safetensors + meta
 
 ## Completion checklist
 
-- [ ] Workspace member **`snlds-viz`** added to root `Cargo.toml`
-- [ ] **`render.rs`**: `draw_sequence` matches Python `_draw` output on reference input (unit test)
-- [ ] **`log.rs`**: entity paths and Rerun types defined and stable
-- [ ] **`bin/snlds-viz.rs`**: loads dataset, logs `z_t`, `x_t`, `s_t`, saves `.rrd`
-- [ ] **`--render`** flag logs video frames via `draw_sequence` when `dim_latent == 2`
-- [ ] **Unit test**: `draw_sequence` on a known 1-step input — ball center pixel correct, background correct
-- [ ] **Integration smoke test**: run CLI on a tiny generated dataset (reuse `cosine_tiny_cfg` from M1), assert `.rrd` file is written and non-empty
-- [ ] [docs/PRD-burn-port.md](PRD-burn-port.md) **§8.5** updated with `rerun = "0.31"` pin
+- [x] Workspace member **`snlds-viz`** added to root `Cargo.toml`
+- [x] **`render.rs`**: `draw_sequence` implemented; tests: `draw_sequence_ball_pixel_lit`, `draw_sequence_values_in_range`, `draw_sequence_blur_softens_edges`
+- [x] **`log.rs`**: entity paths and Rerun types defined — `log_latent_z`, `log_obs_x`, `log_state_s`, `log_render_frames`
+- [x] **`bin/snlds-viz.rs`**: loads dataset, logs `z_t`, `x_t`, `s_t`, saves `.rrd`
+- [x] **`--render`** flag logs video frames via `draw_sequence` when `dim_latent == 2`; `anyhow::bail!` if dim != 2
+- [x] **Unit test**: `draw_sequence_ball_pixel_lit` — 1-step known input, ball center pixel > 0.5, all values in [0,1]
+- [x] **Integration smoke test**: `cli_smoke_writes_rrd` — cosine dataset to tempdir, assert `.rrd` size > 0
+- [x] [docs/PRD-burn-port.md](PRD-burn-port.md) **§8.5** updated with `rerun = "0.31"` pin
 - [x] [docs/PRD-burn-port.md](PRD-burn-port.md) §9 links this tracker ([M-Viz.md](M-Viz.md) footnote in milestone table)
 
 ---
@@ -133,9 +133,20 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 
 ---
 
+## Updates
+
+| Item | Description |
+|------|-------------|
+| Box blur | Always divides by 4.0 (zero-padding), matching `scipy.ndimage.uniform_filter` — kernel reads left/top neighbours so ball bleeds right/down |
+| `log_latent_z` / `log_obs_x` | Take `ArrayView2<f32>` directly (not `&[f32] + t_len`) |
+| Rerun 0.31 API | `LineStrips2D::new([points])`, `Scalars::single(val)`, `Image::from_elements(&u8_pixels, [w,h], ColorModel::RGB)`, `rec.set_time_sequence("timeline", val)` |
+
+---
+
 ## Document history
 
 | Date | Note |
 |------|------|
 | 2026-04-29 | Initial tracker. Includes `_draw` rendering pulled forward from M6 (latents-only, no encoder needed). |
 | 2026-04-29 | PRD §9 milestone table links [M-Viz.md](M-Viz.md) (doc 1.13). |
+| 2026-04-29 | M-Viz complete and merged to main; checklist and Updates filled in. |
