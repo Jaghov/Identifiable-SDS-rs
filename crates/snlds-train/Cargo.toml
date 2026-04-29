@@ -1,0 +1,19 @@
+[package]
+name = "snlds-train"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "snlds-train"
+path = "src/bin/snlds-train.rs"
+
+[dependencies]
+snlds-model = { path = "../snlds-model" }
+snlds-data = { path = "../snlds-data" }
+burn = { version = "0.20.1", features = ["ndarray", "autodiff"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rand = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
