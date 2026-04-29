@@ -24,6 +24,7 @@ fn tiny_data(dir: &std::path::Path) -> Manifest {
         sparsity_prob: 0.0,
         kind: SimulatorKind::Poly,
         poly_degree: 2,
+        ..GenConfig::default()
     };
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -36,8 +37,12 @@ fn tiny_data(dir: &std::path::Path) -> Manifest {
         sparsity_prob: cfg.sparsity_prob,
         data_type: "poly".into(),
         degree: Some(cfg.poly_degree),
+        init_noise_std: cfg.init_noise_std,
+        init_mean_std: cfg.init_mean_std,
+        transition_step_var: cfg.transition_step_var,
+        emission_hidden_dim: cfg.emission_hidden_dim,
     };
-    let train_test = generate_train_test(&cfg);
+    let train_test = generate_train_test(&cfg).expect("generate tiny data");
     save_train_test(dir, &train_test, &manifest).expect("save tiny data");
     manifest
 }

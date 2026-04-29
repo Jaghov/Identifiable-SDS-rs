@@ -12,28 +12,20 @@ use tempfile::tempdir;
 fn cosine_tiny_cfg() -> GenConfig {
     GenConfig {
         seed: 4242,
-        num_states: 3,
-        dim_obs: 2,
-        dim_latent: 2,
         seq_length: 8,
         num_samples: 4,
-        sparsity_prob: 0.0,
         kind: SimulatorKind::Cosine,
-        poly_degree: 3,
+        ..GenConfig::default()
     }
 }
 
 fn poly_tiny_cfg() -> GenConfig {
     GenConfig {
         seed: 9191,
-        num_states: 3,
-        dim_obs: 2,
-        dim_latent: 2,
         seq_length: 8,
         num_samples: 4,
-        sparsity_prob: 0.0,
         kind: SimulatorKind::Poly,
-        poly_degree: 3,
+        ..GenConfig::default()
     }
 }
 
@@ -69,7 +61,7 @@ fn assert_train_test_shapes(cfg: &GenConfig, tt: &TrainTest) {
 #[test]
 fn generate_train_test_shapes_ranges_and_finite() {
     let cfg = cosine_tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).unwrap();
     assert_train_test_shapes(&cfg, &tt);
     assert_all_finite_f32(&tt);
     assert_state_range(&tt, cfg.num_states);
@@ -78,7 +70,7 @@ fn generate_train_test_shapes_ranges_and_finite() {
 #[test]
 fn generate_train_test_poly_shapes_ranges_and_finite() {
     let cfg = poly_tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).unwrap();
     assert_train_test_shapes(&cfg, &tt);
     assert_all_finite_f32(&tt);
     assert_state_range(&tt, cfg.num_states);
@@ -89,16 +81,14 @@ fn generation_is_deterministic() {
     let cfg = GenConfig {
         seed: 7,
         num_states: 2,
-        dim_obs: 2,
-        dim_latent: 2,
         seq_length: 5,
         num_samples: 3,
-        sparsity_prob: 0.0,
         kind: SimulatorKind::Poly,
         poly_degree: 2,
+        ..GenConfig::default()
     };
-    let a = generate_train_test(&cfg);
-    let b = generate_train_test(&cfg);
+    let a = generate_train_test(&cfg).unwrap();
+    let b = generate_train_test(&cfg).unwrap();
     assert_eq!(a.latents_train, b.latents_train);
     assert_eq!(a.obs_train, b.obs_train);
     assert_eq!(a.states_train, b.states_train);
@@ -117,7 +107,7 @@ fn cosine_sparse_tiny_cfg() -> GenConfig {
 #[test]
 fn generate_train_test_cosine_sparse_shapes_ranges_and_finite() {
     let cfg = cosine_sparse_tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).unwrap();
     assert_train_test_shapes(&cfg, &tt);
     assert_all_finite_f32(&tt);
     assert_state_range(&tt, cfg.num_states);
@@ -126,8 +116,8 @@ fn generate_train_test_cosine_sparse_shapes_ranges_and_finite() {
 #[test]
 fn generation_is_deterministic_cosine_sparse() {
     let cfg = cosine_sparse_tiny_cfg();
-    let a = generate_train_test(&cfg);
-    let b = generate_train_test(&cfg);
+    let a = generate_train_test(&cfg).unwrap();
+    let b = generate_train_test(&cfg).unwrap();
     assert_eq!(a.latents_train, b.latents_train);
     assert_eq!(a.obs_train, b.obs_train);
     assert_eq!(a.states_train, b.states_train);
@@ -139,7 +129,7 @@ fn generation_is_deterministic_cosine_sparse() {
 #[test]
 fn safetensors_roundtrip_all_tensors_and_metadata() {
     let cfg = cosine_tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).unwrap();
     let dir = tempdir().unwrap();
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -152,6 +142,10 @@ fn safetensors_roundtrip_all_tensors_and_metadata() {
         sparsity_prob: cfg.sparsity_prob,
         data_type: "cosine".into(),
         degree: None,
+        init_noise_std: cfg.init_noise_std,
+        init_mean_std: cfg.init_mean_std,
+        transition_step_var: cfg.transition_step_var,
+        emission_hidden_dim: cfg.emission_hidden_dim,
     };
 
     save_train_test(dir.path(), &tt, &manifest).unwrap();
@@ -199,7 +193,7 @@ fn safetensors_roundtrip_all_tensors_and_metadata() {
 #[test]
 fn safetensors_persists_q_and_pi_true() {
     let cfg = cosine_tiny_cfg();
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg).unwrap();
     let dir = tempdir().unwrap();
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -212,6 +206,10 @@ fn safetensors_persists_q_and_pi_true() {
         sparsity_prob: cfg.sparsity_prob,
         data_type: "cosine".into(),
         degree: None,
+        init_noise_std: cfg.init_noise_std,
+        init_mean_std: cfg.init_mean_std,
+        transition_step_var: cfg.transition_step_var,
+        emission_hidden_dim: cfg.emission_hidden_dim,
     };
     save_train_test(dir.path(), &tt, &manifest).unwrap();
     let st_path = dir.path().join("sequences.safetensors");
@@ -235,4 +233,146 @@ fn transition_matrix_three_states() {
     let q = get_trans_mat(3);
     assert_eq!(q.shape(), [3, 3]);
     assert!((q.sum() - 3.0).abs() < 1e-4);
+}
+
+#[test]
+fn manifest_v4_simulator_hparams_round_trip() {
+    let cfg = cosine_tiny_cfg();
+    let tt = generate_train_test(&cfg).unwrap();
+    let dir = tempdir().unwrap();
+    let manifest = Manifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        seed: cfg.seed,
+        num_states: cfg.num_states,
+        dim_obs: cfg.dim_obs,
+        dim_latent: cfg.dim_latent,
+        seq_length: cfg.seq_length,
+        num_samples: cfg.num_samples,
+        sparsity_prob: cfg.sparsity_prob,
+        data_type: "cosine".into(),
+        degree: None,
+        init_noise_std: 0.123,
+        init_mean_std: 0.456,
+        transition_step_var: 0.0789,
+        emission_hidden_dim: 16,
+    };
+    save_train_test(dir.path(), &tt, &manifest).unwrap();
+    let loaded = load_manifest(dir.path().join("metadata.json")).unwrap();
+    assert_eq!(loaded.schema_version, 4);
+    assert!((loaded.init_noise_std - 0.123).abs() < 1e-7);
+    assert!((loaded.init_mean_std - 0.456).abs() < 1e-7);
+    assert!((loaded.transition_step_var - 0.0789).abs() < 1e-7);
+    assert_eq!(loaded.emission_hidden_dim, 16);
+    assert_eq!(loaded, manifest);
+}
+
+#[test]
+fn manifest_v3_legacy_json_loads_with_default_simulator_hparams() {
+    // Literal v3 manifest (schema_version: 3, none of the v4 fields present).
+    let v3_json = r#"{
+        "schema_version": 3,
+        "seed": 4242,
+        "num_states": 3,
+        "dim_obs": 2,
+        "dim_latent": 2,
+        "seq_length": 8,
+        "num_samples": 4,
+        "sparsity_prob": 0.0,
+        "data_type": "cosine"
+    }"#;
+    let m: Manifest = serde_json::from_str(v3_json).expect("v3 JSON must still parse");
+    assert_eq!(m.schema_version, 3);
+    assert!((m.init_noise_std - 0.1).abs() < 1e-7);
+    assert!((m.init_mean_std - 0.7).abs() < 1e-7);
+    assert!((m.transition_step_var - 0.05).abs() < 1e-7);
+    assert_eq!(m.emission_hidden_dim, 8);
+}
+
+#[test]
+fn non_uniform_initial_distribution_drives_first_state_frequencies() {
+    let cfg = GenConfig {
+        seed: 1234,
+        seq_length: 2,
+        num_samples: 200,
+        initial_distribution: Some(vec![0.9, 0.05, 0.05]),
+        ..GenConfig::default()
+    };
+    let tt = generate_train_test(&cfg).unwrap();
+    let n = tt.states_train.shape()[0];
+    let mut counts = [0u32; 3];
+    for ni in 0..n {
+        counts[tt.states_train[[ni, 0]] as usize] += 1;
+    }
+    let freqs = [
+        counts[0] as f32 / n as f32,
+        counts[1] as f32 / n as f32,
+        counts[2] as f32 / n as f32,
+    ];
+    assert!(
+        (freqs[0] - 0.9).abs() < 0.05,
+        "expected ~0.9 in state 0, got {}",
+        freqs[0]
+    );
+    // p=0.05 → σ ≈ 0.015 over n=200; <0.1 is ~3σ slack and still rules out uniform (~0.33).
+    assert!(freqs[1] < 0.1, "state 1 freq too high: {}", freqs[1]);
+    assert!(freqs[2] < 0.1, "state 2 freq too high: {}", freqs[2]);
+
+    // pi_true persisted should match the supplied distribution exactly.
+    assert_eq!(tt.pi_true.as_slice().unwrap(), &[0.9, 0.05, 0.05]);
+}
+
+#[test]
+fn initial_distribution_length_mismatch_errors() {
+    let cfg = GenConfig {
+        num_samples: 2,
+        seq_length: 2,
+        initial_distribution: Some(vec![0.5, 0.5]),
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(err.contains("length"), "error should mention length: {err}");
+}
+
+#[test]
+fn initial_distribution_does_not_sum_to_one_errors() {
+    let cfg = GenConfig {
+        num_samples: 2,
+        seq_length: 2,
+        initial_distribution: Some(vec![0.5, 0.5, 0.5]),
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(err.contains("sum"), "error should mention sum: {err}");
+}
+
+#[test]
+fn initial_distribution_negative_entry_errors() {
+    let cfg = GenConfig {
+        num_samples: 2,
+        seq_length: 2,
+        // length 3, sums to 1.0 → must hit the "finite and non-negative" arm, not length/sum.
+        initial_distribution: Some(vec![-0.1, 0.55, 0.55]),
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(
+        err.contains("finite") && err.contains("non-negative"),
+        "error should mention finite + non-negative: {err}"
+    );
+}
+
+#[test]
+fn initial_distribution_nan_entry_errors() {
+    let cfg = GenConfig {
+        num_samples: 2,
+        seq_length: 2,
+        // NaN fails `is_finite`; the other entries are valid so length and sum arms can't fire.
+        initial_distribution: Some(vec![f32::NAN, 0.5, 0.5]),
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(
+        err.contains("finite") && err.contains("non-negative"),
+        "error should mention finite + non-negative: {err}"
+    );
 }

@@ -5,10 +5,18 @@ use crate::transitions::{
     func_cosine_with_sparsity, func_leaky_relu_batch, get_trans_mat, sample_adj_mat,
     CosineStateParams, LeakyParams, PolynomialStateParams, EMISSION_HIDDEN_DIM,
 };
+use anyhow::ensure;
 use ndarray::{s, Array1, Array2, Array3};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal};
+
+/// Default std-dev for `z_0` jitter in the simulator (matches Python `generate_data`).
+pub const DEFAULT_INIT_NOISE_STD: f32 = 0.1;
+/// Default std-dev for the per-state init-mean prior (matches Python `generate_data`).
+pub const DEFAULT_INIT_MEAN_STD: f32 = 0.7;
+/// Default variance of the transition step noise added to `z_t` each step.
+pub const DEFAULT_TRANSITION_STEP_VAR: f32 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimulatorKind {
@@ -29,6 +37,28 @@ pub struct GenConfig {
     pub kind: SimulatorKind,
     /// Used when `SimulatorKind::Poly`; default 3 (Python).
     pub poly_degree: usize,
+    /// Std-dev of the Gaussian jitter added to `z_0` around each per-state init mean
+    /// (default [`DEFAULT_INIT_NOISE_STD`] = 0.1, Python parity).
+    /// Invariant (validated by [`generate_train_test`]): finite and `> 0`.
+    pub init_noise_std: f32,
+    /// Std-dev of the per-state init-mean prior used to draw `init_means[k, :]`
+    /// (default [`DEFAULT_INIT_MEAN_STD`] = 0.7, Python parity).
+    /// Invariant (validated by [`generate_train_test`]): finite and `> 0`.
+    pub init_mean_std: f32,
+    /// Variance of the transition step noise added to `z_t` each step
+    /// (default [`DEFAULT_TRANSITION_STEP_VAR`] = 0.05, Python parity).
+    /// (variance, not std-dev — fed to `Normal::new` as `sqrt(var)`.)
+    /// Invariant (validated by [`generate_train_test`]): finite and `>= 0`
+    /// (`0` is the degenerate "no step noise" case).
+    pub transition_step_var: f32,
+    /// Hidden dimension of the leaky-ReLU emission network in the simulator
+    /// (default [`EMISSION_HIDDEN_DIM`] = 8). Persisted in the manifest since v4.
+    pub emission_hidden_dim: usize,
+    /// Initial-state distribution. `None` = uniform over `0..num_states`. `Some(arr)` must
+    /// have length `num_states`, be all finite and non-negative, and sum to 1 within
+    /// `1e-6` (validated by [`generate_train_test`]). Drives both the per-sequence draw
+    /// of `s_0` and the persisted `pi_true` tensor.
+    pub initial_distribution: Option<Vec<f32>>,
 }
 
 impl Default for GenConfig {
@@ -43,6 +73,11 @@ impl Default for GenConfig {
             sparsity_prob: 0.0,
             kind: SimulatorKind::Cosine,
             poly_degree: 3,
+            init_noise_std: DEFAULT_INIT_NOISE_STD,
+            init_mean_std: DEFAULT_INIT_MEAN_STD,
+            transition_step_var: DEFAULT_TRANSITION_STEP_VAR,
+            emission_hidden_dim: EMISSION_HIDDEN_DIM,
+            initial_distribution: None,
         }
     }
 }
@@ -60,17 +95,71 @@ pub struct TrainTest {
     /// [`crate::transitions::get_trans_mat`]. Persisted as `q_true` (F32) since schema v3 so
     /// downstream viz / eval can compare against a learned `Q`.
     pub q_true: Array2<f32>,
-    /// Ground-truth initial state distribution `[K]`. The Python reference samples the first
-    /// state uniformly across `K`, so this is `1/K` everywhere unless the simulator is changed.
+    /// Ground-truth initial state distribution `[K]`. Matches `cfg.initial_distribution`
+    /// after validation, or uniform `1/K` when `None`.
     pub pi_true: Array1<f32>,
 }
 
 /// Generate train (`N=num_samples`) and test (`max(1, num_samples // 10)`) splits.
-pub fn generate_train_test(cfg: &GenConfig) -> TrainTest {
+///
+/// Returns `Err` if any simulator hyperparameter is invalid:
+/// - `init_noise_std` / `init_mean_std` not finite or not `> 0`,
+/// - `transition_step_var` not finite or not `>= 0`,
+/// - `initial_distribution` is `Some(_)` but wrong length, contains non-finite or
+///   negative entries, or doesn't sum to 1 within `1e-6`.
+pub fn generate_train_test(cfg: &GenConfig) -> anyhow::Result<TrainTest> {
     let n_train = cfg.num_samples;
     let n_test = (cfg.num_samples / 10).max(1);
     let rng = ChaCha8Rng::seed_from_u64(cfg.seed);
     generate_split(rng, cfg, n_train, n_test)
+}
+
+/// Validate the simulator scalar invariants documented on each `GenConfig` field.
+fn validate_simulator_hparams(cfg: &GenConfig) -> anyhow::Result<()> {
+    ensure!(
+        cfg.init_noise_std.is_finite() && cfg.init_noise_std > 0.0,
+        "init_noise_std must be finite and > 0 (got {})",
+        cfg.init_noise_std
+    );
+    ensure!(
+        cfg.init_mean_std.is_finite() && cfg.init_mean_std > 0.0,
+        "init_mean_std must be finite and > 0 (got {})",
+        cfg.init_mean_std
+    );
+    ensure!(
+        cfg.transition_step_var.is_finite() && cfg.transition_step_var >= 0.0,
+        "transition_step_var must be finite and >= 0 (got {})",
+        cfg.transition_step_var
+    );
+    Ok(())
+}
+
+/// Validate `cfg.initial_distribution` and return the effective distribution used
+/// for sampling `s_0` and persisted as `pi_true`. Also validates the simulator
+/// scalar invariants (`init_noise_std`, `init_mean_std`, `transition_step_var`).
+fn resolved_initial_distribution(cfg: &GenConfig) -> anyhow::Result<Vec<f32>> {
+    validate_simulator_hparams(cfg)?;
+    match &cfg.initial_distribution {
+        None => Ok(vec![1.0 / cfg.num_states as f32; cfg.num_states]),
+        Some(probs) => {
+            ensure!(
+                probs.len() == cfg.num_states,
+                "initial_distribution length {} != num_states {}",
+                probs.len(),
+                cfg.num_states
+            );
+            ensure!(
+                probs.iter().all(|prob| prob.is_finite() && *prob >= 0.0),
+                "initial_distribution must be all finite and non-negative"
+            );
+            let sum: f32 = probs.iter().sum();
+            ensure!(
+                (sum - 1.0).abs() <= 1e-6,
+                "initial_distribution must sum to 1 (got {sum})"
+            );
+            Ok(probs.clone())
+        }
+    }
 }
 
 fn generate_split(
@@ -78,12 +167,13 @@ fn generate_split(
     cfg: &GenConfig,
     n_train: usize,
     n_test: usize,
-) -> TrainTest {
-    let (latents_train, obs_train, states_train) = roll_sequences(&mut rng, cfg, n_train);
-    let (latents_test, obs_test, states_test) = roll_sequences(&mut rng, cfg, n_test);
+) -> anyhow::Result<TrainTest> {
+    let pi = resolved_initial_distribution(cfg)?;
+    let (latents_train, obs_train, states_train) = roll_sequences(&mut rng, cfg, n_train, &pi);
+    let (latents_test, obs_test, states_test) = roll_sequences(&mut rng, cfg, n_test, &pi);
     let q_true = crate::transitions::get_trans_mat(cfg.num_states);
-    let pi_true = Array1::from_elem(cfg.num_states, 1.0 / cfg.num_states as f32);
-    TrainTest {
+    let pi_true = Array1::from_vec(pi);
+    Ok(TrainTest {
         latents_train,
         obs_train,
         states_train,
@@ -92,14 +182,19 @@ fn generate_split(
         states_test,
         q_true,
         pi_true,
-    }
+    })
 }
 
-fn rand_leaky(rng: &mut ChaCha8Rng, dim_obs: usize, dim_latent: usize) -> LeakyParams {
+fn rand_leaky(
+    rng: &mut ChaCha8Rng,
+    dim_obs: usize,
+    dim_latent: usize,
+    hidden_dim: usize,
+) -> LeakyParams {
     let weight_dist = Normal::new(0.0f32, 0.5).expect("std=0.5 is a positive literal");
-    let mut alphas = Array2::<f32>::zeros((dim_obs, EMISSION_HIDDEN_DIM));
-    let mut omegas = Array2::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent));
-    let mut betas = Array1::<f32>::zeros(EMISSION_HIDDEN_DIM);
+    let mut alphas = Array2::<f32>::zeros((dim_obs, hidden_dim));
+    let mut omegas = Array2::<f32>::zeros((hidden_dim, dim_latent));
+    let mut betas = Array1::<f32>::zeros(hidden_dim);
     for a in alphas.iter_mut() {
         *a = weight_dist.sample(rng);
     }
@@ -125,18 +220,25 @@ fn roll_sequences(
     rng: &mut ChaCha8Rng,
     cfg: &GenConfig,
     n: usize,
+    pi: &[f32],
 ) -> (Array3<f32>, Array3<f32>, Array2<i32>) {
     let seq_len = cfg.seq_length;
     let k = cfg.num_states;
     let dim_latent = cfg.dim_latent;
+    let hidden_dim = cfg.emission_hidden_dim;
     let q = get_trans_mat(k);
-    let leaky = rand_leaky(rng, cfg.dim_obs, cfg.dim_latent);
+    let leaky = rand_leaky(rng, cfg.dim_obs, cfg.dim_latent, hidden_dim);
 
     let sim = match cfg.kind {
         SimulatorKind::Cosine => {
             let mut state_params = Vec::with_capacity(k);
             for _ in 0..k {
-                state_params.push(rand_cosine_state(rng, cfg.dim_latent, cfg.sparsity_prob));
+                state_params.push(rand_cosine_state(
+                    rng,
+                    cfg.dim_latent,
+                    cfg.sparsity_prob,
+                    hidden_dim,
+                ));
             }
             DynSim::Cos(state_params)
         }
@@ -167,9 +269,11 @@ fn roll_sequences(
     let mut obs = Array3::<f32>::zeros((n, seq_len, cfg.dim_obs));
     let mut states = Array2::<i32>::zeros((n, seq_len));
 
-    let init_noise = Normal::new(0.0f32, 0.1).expect("std=0.1 is a positive literal");
+    let init_noise = Normal::new(0.0f32, cfg.init_noise_std)
+        .expect("init_noise_std validated by validate_simulator_hparams");
     let init_means: Array2<f32> = {
-        let normal = Normal::new(0.0f32, 0.7).expect("std=0.7 is a positive literal");
+        let normal = Normal::new(0.0f32, cfg.init_mean_std)
+            .expect("init_mean_std validated by validate_simulator_hparams");
         let mut m = Array2::<f32>::zeros((k, dim_latent));
         for s in 0..k {
             for j in 0..dim_latent {
@@ -181,7 +285,7 @@ fn roll_sequences(
 
     // Per-sequence initial state and t=0
     for ni in 0..n {
-        let init_state = rng.random_range(0..k);
+        let init_state = sample_from_probs(rng, pi);
         states[[ni, 0]] = init_state as i32;
         for j in 0..dim_latent {
             latents[[ni, 0, j]] = init_means[[init_state, j]] + init_noise.sample(rng);
@@ -192,10 +296,10 @@ fn roll_sequences(
         obs.slice_mut(s![.., 0, ..]).assign(&obs_t0);
     }
 
-    let scale_var = 0.05f32;
+    let scale_var = cfg.transition_step_var;
     let scale_std = scale_var.sqrt();
-    let step_noise =
-        Normal::new(0.0f32, scale_std).expect("scale_std = sqrt(0.05) > 0 by construction");
+    let step_noise = Normal::new(0.0f32, scale_std)
+        .expect("transition_step_var validated by validate_simulator_hparams (>= 0)");
 
     for ti in 1..seq_len {
         for ni in 0..n {
@@ -233,11 +337,12 @@ fn rand_cosine_state(
     rng: &mut ChaCha8Rng,
     dim_latent: usize,
     sparsity_prob: f32,
+    hidden_dim: usize,
 ) -> CosineStateParams {
     let weight_dist = Normal::new(0.0f32, 0.5).expect("std=0.5 is a positive literal");
-    let mut alphas = Array3::<f32>::zeros((1, dim_latent, EMISSION_HIDDEN_DIM));
-    let mut omegas = Array3::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent, dim_latent));
-    let mut betas = Array2::<f32>::zeros((dim_latent, EMISSION_HIDDEN_DIM));
+    let mut alphas = Array3::<f32>::zeros((1, dim_latent, hidden_dim));
+    let mut omegas = Array3::<f32>::zeros((hidden_dim, dim_latent, dim_latent));
+    let mut betas = Array2::<f32>::zeros((dim_latent, hidden_dim));
     for x in alphas.iter_mut() {
         *x = weight_dist.sample(rng);
     }
@@ -256,14 +361,14 @@ fn rand_cosine_state(
     }
 }
 
-fn sample_from_probs<R: Rng + ?Sized>(rng: &mut R, p: &[f32]) -> usize {
-    let u = rng.random::<f32>();
+fn sample_from_probs<R: Rng + ?Sized>(rng: &mut R, probs: &[f32]) -> usize {
+    let uniform_draw = rng.random::<f32>();
     let mut cum_prob = 0f32;
-    for (i, prob) in p.iter().enumerate() {
+    for (idx, prob) in probs.iter().enumerate() {
         cum_prob += *prob;
-        if u < cum_prob {
-            return i;
+        if uniform_draw < cum_prob {
+            return idx;
         }
     }
-    p.len().saturating_sub(1)
+    probs.len().saturating_sub(1)
 }

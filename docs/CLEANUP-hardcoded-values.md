@@ -121,6 +121,15 @@ Make `EMISSION_HIDDEN_DIM` the **default constructor value**, not the only allow
 - `docs/M1.md`: schema v4 history row, expanded `GenConfig` table, deprecation note on `EMISSION_HIDDEN_DIM` constant (kept as default-only).
 - `docs/PRD-burn-port.md`: changelog row, version bump.
 
+#### 3f. Followups (out of scope for PR 3)
+
+- **`snlds-gen` CLI flags** for the new simulator hyperparameters
+  (`--init-noise-std`, `--init-mean-std`, `--transition-step-var`,
+  `--emission-hidden-dim`, `--initial-distribution`). PR 3 leaves the
+  `snlds-gen` CLI flags for these as a follow-up; they're consumable via the
+  library API or by editing `crates/snlds-data/src/bin/snlds-gen.rs`.
+  A `TODO(M1+)` breadcrumb in `main()` points back here.
+
 **Acceptance**
 - `cargo test -p snlds-data` green including new round-trip + non-uniform-π tests.
 - Constructed `Manifest` with `schema_version: 3` (and missing the new fields) still deserialises.

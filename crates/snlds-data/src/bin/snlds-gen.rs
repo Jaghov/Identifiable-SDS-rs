@@ -52,6 +52,9 @@ fn main() -> Result<()> {
         DataCli::Poly => SimulatorKind::Poly,
     };
 
+    // TODO(M1+): expose --init-noise-std, --init-mean-std, --transition-step-var,
+    // --emission-hidden-dim, and --initial-distribution as CLI flags. Currently
+    // pinned to GenConfig::default() — see docs/CLEANUP-hardcoded-values.md.
     let cfg = GenConfig {
         seed: args.seed,
         num_states: args.num_states,
@@ -62,9 +65,10 @@ fn main() -> Result<()> {
         sparsity_prob: args.sparsity_prob,
         kind,
         poly_degree: args.degree,
+        ..GenConfig::default()
     };
 
-    let tt = generate_train_test(&cfg);
+    let tt = generate_train_test(&cfg)?;
     let manifest = Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         seed: cfg.seed,
@@ -82,6 +86,10 @@ fn main() -> Result<()> {
             SimulatorKind::Poly => Some(cfg.poly_degree),
             _ => None,
         },
+        init_noise_std: cfg.init_noise_std,
+        init_mean_std: cfg.init_mean_std,
+        transition_step_var: cfg.transition_step_var,
+        emission_hidden_dim: cfg.emission_hidden_dim,
     };
     save_train_test(&args.out, &tt, &manifest)?;
     eprintln!(
