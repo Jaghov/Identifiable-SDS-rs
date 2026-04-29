@@ -2,7 +2,7 @@
 
 **PRD:** [§9 Milestones](PRD-burn-port.md#9-milestones) (row **M-Viz+**), [§5.4 Visualization (Rerun)](PRD-burn-port.md#54-visualization-rerun).
 
-**Status:** planned — checkboxes open until implementation merges.
+**Status:** merged — library logging APIs + smoke tests in **`snlds-viz`** (training CLI wiring optional; see **Updates**).
 
 ---
 
@@ -16,15 +16,16 @@ Depends on **M3** (or a minimal eval path that exposes \(\gamma\) and \(\hat{x}\
 
 ## Entity schema (extends M-Viz)
 
-Reuse **M-Viz** paths for \(z_t\), \(x_t\), \(s_t\) where ground truth exists. Add (names illustrative — finalize in implementation):
+Reuse **M-Viz** paths for \(z_t\), \(x_t\), \(s_t\) where ground truth exists. **Implemented** paths:
 
-| Entity path (example) | Rerun type | Content |
-|----------------------|------------|---------|
-| `snlds/state/gamma_k` | `Scalar` (per \(k\)) or stacked series | Posterior \(\gamma_{t,k}\) vs \(t\) |
-| `snlds/obs/x_hat` | `Points2D` / `LineStrips2D` or tensor | Reconstruction \(\hat{x}_t\) |
-| `snlds/train/elbo` | `Scalar` | ELBO (or minimized loss) timeline |
-| `snlds/train/mse` | `Scalar` | Reconstruction MSE when logged |
-| `snlds/train/temperature` | `Scalar` | Temperature schedule |
+| Entity path (implementation) | Rerun type | Content |
+|-------------------------------|------------|---------|
+| `snlds/state/gamma_{k}` | `Scalars::single` per timestep | Posterior \(\gamma_{t,k}\) vs \(t\) (one entity per \(k\); timelines `sequence` + `time`) |
+| `snlds/obs/x_hat` | `LineStrips2D` when **`obs_dim == 2`** | Reconstruction \(\hat{x}_t\) as a single path |
+| `snlds/obs/x_hat_d{d}` | `Scalars::single` per timestep | Per-dimension series when **`obs_dim != 2`** |
+| `snlds/train/elbo` | `Scalars::single` | ELBO (caller-defined sign; typically maximised ELBO) on timeline **`train_step`** |
+| `snlds/train/mse` | `Scalars::single` | Scalar passed by caller (e.g. reconstruction MSE) |
+| `snlds/train/temperature` | `Scalars::single` | Temperature |
 
 Align with PRD [§5.4](PRD-burn-port.md#54-visualization-rerun): **paper-style** discrete-state plots (\(\gamma_{t,k}\) vs \(t\)); **overlay** with true \(s_t\) when **[M1](M1.md)** labels exist. **Stride** or **subsample** logging to control **log volume** ([PRD §6](PRD-burn-port.md#6-non-functional-requirements)).
 
@@ -32,12 +33,13 @@ Align with PRD [§5.4](PRD-burn-port.md#54-visualization-rerun): **paper-style**
 
 ## Completion checklist
 
-- [ ] **API / hooks** in training or eval binary to emit \(\gamma_{t,k}\), \(\hat{x}_t\), and chosen scalars to Rerun ( **`rerun`** pin per **M-Viz** / **§8.5** ).
-- [ ] **Entity paths** documented and **stable** (append-only extension of **[M-Viz](M-Viz.md)** schema).
-- [ ] **Posterior** logging matches eval semantics (dedicated **eval forward** if training `forward` omits full posteriors, mirroring Python `forward` vs `predict_sequence` notes in PRD §5.4).
-- [ ] **Ground-truth overlay** path tested when `states_*` / sequences available from **M1** data.
-- [ ] **`.rrd` export** integration smoke: non-empty recording after short train or eval on tiny config.
-- [ ] [docs/PRD-burn-port.md](PRD-burn-port.md) **§8.5** / **§5.4** cross-links updated if schema or pins change.
+- [x] **Library API** in **`snlds-viz`** — [`log_posteriors`](../crates/snlds-viz/src/log.rs), [`log_reconstructions`](../crates/snlds-viz/src/log.rs), [`log_train_scalars`](../crates/snlds-viz/src/log.rs); re-exported from **`snlds_viz`** root ( **`rerun`** pin unchanged from **M-Viz** / **§8.5** ).
+- [x] **Entity paths** documented above and **stable** (append-only extension of **[M-Viz](M-Viz.md)** schema).
+- [ ] **Training / eval binary** calls the new log functions (optional; **[M4](M4.md)** ships stdout metrics only — wire **`--viz`** or env in a follow-up).
+- [ ] **Posterior** semantics: callers pass \(\gamma_{t,k}\) from model eval; dedicated **`predict_sequence`-style** path still optional if **`forward`** omits full posteriors (PRD §5.4).
+- [ ] **Ground-truth overlay** automated test with **`states_*`** from **M1** (manual Rerun compare remains valid).
+- [x] **Smoke tests** — no panic on tiny tensors (`crates/snlds-viz/tests/smoke.rs`).
+- [ ] [docs/PRD-burn-port.md](PRD-burn-port.md) **§8.5** only if **`rerun`** pin changes (unchanged).
 
 ---
 
@@ -65,7 +67,7 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 
 ## Downstream
 
-**[M4](M4.md)** may bundle **M-Viz+** behind **`--viz`** / **`RERUN`** flags on the training CLI. PRD [§10 Success criteria](PRD-burn-port.md#10-success-criteria) item **4** (replay with \(\gamma_{t,k}\) vs \(t\) and true \(s_t\)) is satisfied once this milestone ships with **[M3](M3.md)** eval.
+**[M4](M4.md)** may still add **M-Viz+** behind **`--viz`** / **`RERUN`** on **`snlds-train`**. PRD [§10 Success criteria](PRD-burn-port.md#10-success-criteria) item **4** needs a small eval or scripted logging session that records \(\gamma_{t,k}\) and true \(s_t\) together — library support is in place; orchestration can follow.
 
 ---
 
@@ -73,7 +75,7 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 
 | Item | Description |
 |------|-------------|
-| | |
+| 2026-04-29 | **Merged:** `snlds-viz` exposes `log_posteriors`, `log_reconstructions`, `log_train_scalars` + smoke tests. Entity paths use `gamma_{k}` (indexed), not a literal `gamma_k` suffix. |
 
 ---
 
@@ -81,4 +83,5 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 
 | Date       | Note |
 |------------|------|
+| 2026-04-29 | **Merged** — implementation checkpoint + residual follow-ups (training CLI `--viz`, overlay test). |
 | 2026-04-29 | Initial tracker (aligned with M-Viz / M3). |

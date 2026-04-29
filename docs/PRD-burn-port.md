@@ -1,6 +1,6 @@
 # PRD: Port identifiable-SDS (SNLDS) to Burn
 
-**Document version:** 1.13  
+**Document version:** 1.14  
 **Last updated:** 2026-04-29  
 **Status:** Draft (living document)
 
@@ -22,6 +22,7 @@ This file is the **single source of truth** for the Burn port. **Update it when 
 
 | Date       | Version | Summary |
 |------------|---------|---------|
+| 2026-04-29 | 1.14    | **M-Viz+** + **M4** merged: trackers [M-Viz+.md](M-Viz+.md), [M4.md](M4.md) updated; §9 status; **`snlds-train`** / **`CompactRecorder`** checkpoint note in §12. |
 | 2026-04-29 | 1.13    | Milestone trackers [M-Viz](M-Viz.md), [M3](M3.md), [M-Viz+](M-Viz+.md), [M4](M4.md), [M5](M5.md), [M6](M6.md); §9 links + table footnotes. |
 | 2026-04-29 | 1.12    | [docs/M2.md](M2.md) M2 milestone tracker (HMM kernels / local evidence); §9 link + table footnote. |
 | 2026-04-29 | 1.11    | **`snlds-data`**: **`rand` 0.9** / **`rand_chacha` 0.9** / **`rand_distr` 0.5** (drop unused **`thiserror`**); §8.5 RNG pins. |
@@ -223,8 +224,8 @@ Detailed **M6** (stretch) checklist + testing gates: **[docs/M6.md](M6.md)**.
 | **M-Viz** | **After M1:** Rerun **ground-truth only** — log synthetic \(z_t\), \(x_t\), true \(s_t\); entity schema + `.rrd`; no model required. *[Tracker: [M-Viz.md](M-Viz.md)]* |
 | **M2** | Tensor tests: HMM forward–backward + local evidence vs reference tensors (exported or hand-checked). *(Can overlap M-Viz.)* *[Tracker: [M2.md](M2.md)]* |
 | **M3** | `MLP`, kernel ops, full `VariationalSNLDS` with `factored` encoder first. *[Tracker: [M3.md](M3.md)]* |
-| **M-Viz+** | **After M3:** extend Rerun with \(\gamma_{t,k}\), \(\hat{x}_t\), training scalars (ELBO, MSE, temperature). *[Tracker: [M-Viz+.md](M-Viz+.md)]* |
-| **M4** | Recurrent encoder (stretch) or factored training CLI; Adam, schedule, clipping, checkpoints, README-style defaults. *[Tracker: [M4.md](M4.md)]* |
+| **M-Viz+** | **After M3:** extend Rerun with \(\gamma_{t,k}\), \(\hat{x}_t\), training scalars (ELBO, MSE, temperature). **✓ Merged** (library APIs in `snlds-viz`; training `--viz` optional). *[Tracker: [M-Viz+.md](M-Viz+.md)]* |
+| **M4** | Factored training CLI (**`snlds-train`**), Adam, gradient clipping, **`CompactRecorder`** checkpoints. **✓ Merged** (StepLR / `--viz` deferred — see tracker). *[Tracker: [M4.md](M4.md)]* |
 | **M5** | Optional NeuralMSM + warm-start + documentation. *[Tracker: [M5.md](M5.md)]* |
 | **M6** (stretch) | Image encoder/decoder path. *[Tracker: [M6.md](M6.md)]* |
 
@@ -255,7 +256,7 @@ Detailed **M6** (stretch) checklist + testing gates: **[docs/M6.md](M6.md)**.
 
 - [x] Target **Burn version** and **default backend** — **Resolved (M0):** `burn 0.20.1`, CubeCL CPU (`burn-cpu`) for CI; WGPU/CUDA for GPU milestones.
 - [x] **`npy` vs SafeTensors for datasets** — **Resolved (1.3):** SafeTensors-first; optional `ndarray-npy`/NPZ for NumPy parity only; not a gate for M3.
-- [ ] Exact **checkpoint format** for sharing with collaborators (Burn native vs safetensors).
+- **Checkpoint format (partial)** — **M4:** training checkpoints use Burn **`CompactRecorder`** **`.mpk`** (MessagePack record). Cross-tool **safetensors** export for collaborators remains optional / future work.
 - [ ] Rerun: **offline-only** (save `.rrd` post-run) vs **streaming** during training by default.
 - [x] **Persistent tensor naming for generated data** — **Resolved (1.5):** [docs/M1.md](M1.md) § SafeTensors key schema v1 (`latents_*`, `obs_*`, `states_*` + sidecar metadata). *(Rerun **entity** paths remain an M-Viz question.)*
 
@@ -278,6 +279,7 @@ _When resolved, move outcomes here or to §8.5 and note in changelog._
 
 | Version | Date       | Notes |
 |---------|------------|-------|
+| 1.14    | 2026-04-29 | **M-Viz+** + **M4** merged; §9 table + §12 checkpoint partial resolve; changelog 1.14. |
 | 1.13    | 2026-04-29 | Milestone trackers M-Viz, M3, M-Viz+, M4, M5, M6; §9 links + table footnotes. |
 | 1.12    | 2026-04-29 | [docs/M2.md](M2.md) M2 milestone tracker (HMM kernels); §9 M2 tracker link. |
 | 1.11    | 2026-04-29 | **`snlds-data`** RNG stack 0.9; remove **`thiserror`**; §8.5 pins. |

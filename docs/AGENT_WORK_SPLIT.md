@@ -15,7 +15,7 @@ Who does what so two assistants do not trample the same files or PR scope. **Upd
 **Suggested first PRs after `docs/` is tracked**
 
 1. `chore: stop ignoring docs/` — `.gitignore` only (if not already merged).
-2. Code PR(s): e.g. pending **`snlds-data`** changes, **`snlds-core`**, new crates (`snlds-model`, `snlds-train`, …) as milestones land.
+2. Code PR(s): e.g. pending **`snlds-data`** changes, **`snlds-core`**, **`snlds-model`**, **`snlds-train`** (M4 landed), … as milestones land.
 
 **Avoid unless coordinated**
 
@@ -66,4 +66,5 @@ Who does what so two assistants do not trample the same files or PR scope. **Upd
 
 | Date       | Note |
 |------------|------|
+| 2026-04-29 | Note **`snlds-train`** (M4) merged; doc slice C6/C7 are trackers, not pending code. |
 | 2026-04-29 | Initial split; `docs/` tracked in git. |
