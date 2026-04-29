@@ -7248,6 +7248,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "snlds-train"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "clap",
+ "rand 0.9.4",
+ "snlds-data",
+ "snlds-model",
+ "tempfile",
+]
+
+[[package]]
 name = "snlds-viz"
 version = "0.1.0"
 dependencies = [
