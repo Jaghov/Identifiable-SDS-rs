@@ -49,12 +49,12 @@ pub struct LeakyParams {
 /// Batched leaky-ReLU emission: **`z`** is **`[N, dim_latent]`**, output **`[N, dim_obs]`**
 /// (**vectorized**, matches Python **`func_leaky_relu(latents[:, t, :], params_leaky)`**).
 pub fn func_leaky_relu_batch(z: ArrayView2<f32>, params: &LeakyParams) -> Array2<f32> {
-    let mut h = z.dot(&params.omegas.t());
-    for mut row in h.rows_mut() {
+    let mut pre_act = z.dot(&params.omegas.t());
+    for mut row in pre_act.rows_mut() {
         row += &params.betas;
     }
-    let h_relu = h.mapv(|v| v.max(0.2 * v));
-    h_relu.dot(&params.alphas.t())
+    let activated = pre_act.mapv(|v| v.max(0.2 * v));
+    activated.dot(&params.alphas.t())
 }
 
 /// Cosine dynamics for one discrete state (`params[k]` tuple in Python).
@@ -73,23 +73,23 @@ pub fn func_cosine_with_sparsity(x: ArrayView1<f32>, feat: &CosineStateParams) -
     let dim_lat = x.len();
     let mut out = Array1::<f32>::zeros(dim_lat);
     for i in 0..dim_lat {
-        let mut inp = Array1::<f32>::zeros(dim_lat);
+        let mut masked_x = Array1::<f32>::zeros(dim_lat);
         for j in 0..dim_lat {
-            inp[j] = x[j] * feat.adj[[i, j]];
+            masked_x[j] = x[j] * feat.adj[[i, j]];
         }
-        let mut hcos = [0f32; EMISSION_HIDDEN_DIM];
+        let mut cosine_features = [0f32; EMISSION_HIDDEN_DIM];
         for k in 0..EMISSION_HIDDEN_DIM {
-            let mut pre = 0f32;
+            let mut pre_act = 0f32;
             for j in 0..dim_lat {
-                pre += feat.omegas[[k, i, j]] * inp[j];
+                pre_act += feat.omegas[[k, i, j]] * masked_x[j];
             }
-            hcos[k] = (pre + feat.betas[[i, k]]).cos();
+            cosine_features[k] = (pre_act + feat.betas[[i, k]]).cos();
         }
-        let mut s = 0f32;
+        let mut weighted_sum = 0f32;
         for k in 0..EMISSION_HIDDEN_DIM {
-            s += feat.alphas[[0, i, k]] * hcos[k];
+            weighted_sum += feat.alphas[[0, i, k]] * cosine_features[k];
         }
-        out[i] = s;
+        out[i] = weighted_sum;
     }
     out
 }
@@ -112,12 +112,12 @@ impl PolynomialStateParams {
     pub fn poly_mean_for_state(&self, z: ArrayView1<f32>, state: usize) -> Array1<f32> {
         let dim_latent = z.len();
         let mut mean = Array1::<f32>::zeros(dim_latent);
-        let x: Vec<f32> = z.iter().copied().collect();
-        let obs_one = expand_polynomial_row(&x, &self.powers);
+        let z_vec: Vec<f32> = z.iter().copied().collect();
+        let poly_features = expand_polynomial_row(&z_vec, &self.powers);
         for d in 0..dim_latent {
             let mut acc = 0f32;
-            for p in 0..obs_one.len() {
-                acc += self.coeffs[[state, d, p]] * obs_one[p];
+            for feat_idx in 0..poly_features.len() {
+                acc += self.coeffs[[state, d, feat_idx]] * poly_features[feat_idx];
             }
             mean[d] = acc;
         }
@@ -130,9 +130,9 @@ impl PolynomialStateParams {
         state_idx: ArrayView1<usize>,
     ) -> ndarray::Array2<f32> {
         let (_, dim_latent) = z_prev.dim();
-        let n = z_prev.nrows();
-        let mut means = ndarray::Array2::<f32>::zeros((n, dim_latent));
-        for ni in 0..n {
+        let num_seqs = z_prev.nrows();
+        let mut means = ndarray::Array2::<f32>::zeros((num_seqs, dim_latent));
+        for ni in 0..num_seqs {
             let row = self.poly_mean_for_state(z_prev.row(ni), state_idx[ni]);
             means.row_mut(ni).assign(&row);
         }
@@ -148,11 +148,11 @@ mod tests {
     #[test]
     fn func_leaky_relu_batch_single_row_slices_match_full_batch() {
         let dim_obs = 2usize;
-        let dl = 3usize;
+        let dim_latent = 3usize;
         let h = EMISSION_HIDDEN_DIM;
         let leaky = LeakyParams {
             alphas: Array2::from_elem((dim_obs, h), 0.12f32),
-            omegas: Array2::from_elem((h, dl), 0.07f32),
+            omegas: Array2::from_elem((h, dim_latent), 0.07f32),
             betas: Array1::from_elem(h, -0.03f32),
         };
         let z = array![
@@ -196,13 +196,13 @@ mod tests {
     #[test]
     fn func_cosine_with_sparsity_matches_cos_on_single_channel() {
         let h = EMISSION_HIDDEN_DIM;
-        let dl = 1usize;
-        let mut alphas = Array3::<f32>::zeros((1, dl, h));
+        let dim_latent = 1usize;
+        let mut alphas = Array3::<f32>::zeros((1, dim_latent, h));
         alphas[[0, 0, 0]] = 1.0;
-        let mut omegas = Array3::<f32>::zeros((h, dl, dl));
+        let mut omegas = Array3::<f32>::zeros((h, dim_latent, dim_latent));
         omegas[[0, 0, 0]] = 1.0;
-        let betas = Array2::<f32>::zeros((dl, h));
-        let adj = Array2::<f32>::ones((dl, dl));
+        let betas = Array2::<f32>::zeros((dim_latent, h));
+        let adj = Array2::<f32>::ones((dim_latent, dim_latent));
         let feat = CosineStateParams {
             alphas,
             omegas,
@@ -217,20 +217,20 @@ mod tests {
     #[test]
     fn func_cosine_with_sparsity_identity_adj_differs_from_dense_adj() {
         let h = EMISSION_HIDDEN_DIM;
-        let dl = 2usize;
-        let mut alphas = Array3::<f32>::zeros((1, dl, h));
+        let dim_latent = 2usize;
+        let mut alphas = Array3::<f32>::zeros((1, dim_latent, h));
         alphas[[0, 0, 0]] = 1.0;
         alphas[[0, 1, 0]] = 1.0;
-        let mut omegas = Array3::<f32>::zeros((h, dl, dl));
+        let mut omegas = Array3::<f32>::zeros((h, dim_latent, dim_latent));
         omegas[[0, 0, 0]] = 1.0;
         omegas[[0, 0, 1]] = 0.5;
         omegas[[0, 1, 0]] = 0.25;
         omegas[[0, 1, 1]] = 1.0;
-        let mut betas = Array2::<f32>::zeros((dl, h));
+        let mut betas = Array2::<f32>::zeros((dim_latent, h));
         betas[[0, 0]] = 0.1;
         betas[[1, 0]] = -0.2;
-        let adj_i = Array2::<f32>::eye(dl);
-        let adj_ones = Array2::<f32>::ones((dl, dl));
+        let adj_i = Array2::<f32>::eye(dim_latent);
+        let adj_ones = Array2::<f32>::ones((dim_latent, dim_latent));
         let base = CosineStateParams {
             alphas,
             omegas,
@@ -296,16 +296,16 @@ mod tests {
 
     #[test]
     fn poly_mean_for_state_matches_poly_means_rows_one_row() {
-        let k = 2usize;
-        let dl = 2usize;
+        let num_states = 2usize;
+        let dim_latent = 2usize;
         let degree = 2usize;
-        let num_p = crate::polynomial::sklearn_poly_output_count(dl, degree);
-        let coeffs = Array3::from_elem((k, dl, num_p), 0.25f32);
-        let p = PolynomialStateParams::new(coeffs, dl, degree);
-        let z2 = array![[0.5f32, -1.0f32]];
+        let num_p = crate::polynomial::sklearn_poly_output_count(dim_latent, degree);
+        let coeffs = Array3::from_elem((num_states, dim_latent, num_p), 0.25f32);
+        let poly = PolynomialStateParams::new(coeffs, dim_latent, degree);
+        let z_batch = array![[0.5f32, -1.0f32]];
         let states = ndarray::Array1::from_elem(1, 0usize);
-        let batch = p.poly_means_rows(z2.view(), states.view());
-        let scalar = p.poly_mean_for_state(z2.row(0), 0);
+        let batch = poly.poly_means_rows(z_batch.view(), states.view());
+        let scalar = poly.poly_mean_for_state(z_batch.row(0), 0);
         assert!(batch
             .row(0)
             .iter()

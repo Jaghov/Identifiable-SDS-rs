@@ -41,8 +41,8 @@ pub fn save_train_test(
 
     let data = encode_safetensors(tt)?;
     fs::write(out_dir.join("sequences.safetensors"), data)?;
-    let mj = serde_json::to_vec_pretty(manifest)?;
-    fs::write(out_dir.join("metadata.json"), mj)?;
+    let manifest_bytes = serde_json::to_vec_pretty(manifest)?;
+    fs::write(out_dir.join("metadata.json"), manifest_bytes)?;
     Ok(())
 }
 

@@ -72,31 +72,31 @@ fn generate_split(
     n_train: usize,
     n_test: usize,
 ) -> TrainTest {
-    let (lat_tr, obs_tr, st_tr) = roll_sequences(&mut rng, cfg, n_train);
-    let (lat_te, obs_te, st_te) = roll_sequences(&mut rng, cfg, n_test);
+    let (latents_train, obs_train, states_train) = roll_sequences(&mut rng, cfg, n_train);
+    let (latents_test, obs_test, states_test) = roll_sequences(&mut rng, cfg, n_test);
     TrainTest {
-        latents_train: lat_tr,
-        obs_train: obs_tr,
-        states_train: st_tr,
-        latents_test: lat_te,
-        obs_test: obs_te,
-        states_test: st_te,
+        latents_train,
+        obs_train,
+        states_train,
+        latents_test,
+        obs_test,
+        states_test,
     }
 }
 
 fn rand_leaky(rng: &mut ChaCha8Rng, dim_obs: usize, dim_latent: usize) -> LeakyParams {
-    let n = Normal::new(0.0f32, 0.5).unwrap();
+    let weight_dist = Normal::new(0.0f32, 0.5).unwrap();
     let mut alphas = Array2::<f32>::zeros((dim_obs, EMISSION_HIDDEN_DIM));
     let mut omegas = Array2::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent));
     let mut betas = Array1::<f32>::zeros(EMISSION_HIDDEN_DIM);
     for a in alphas.iter_mut() {
-        *a = n.sample(rng);
+        *a = weight_dist.sample(rng);
     }
     for o in omegas.iter_mut() {
-        *o = n.sample(rng);
+        *o = weight_dist.sample(rng);
     }
     for b in betas.iter_mut() {
-        *b = n.sample(rng);
+        *b = weight_dist.sample(rng);
     }
     LeakyParams {
         alphas,
@@ -115,25 +115,25 @@ fn roll_sequences(
     cfg: &GenConfig,
     n: usize,
 ) -> (Array3<f32>, Array3<f32>, Array2<i32>) {
-    let t = cfg.seq_length;
+    let seq_len = cfg.seq_length;
     let k = cfg.num_states;
-    let dl = cfg.dim_latent;
+    let dim_latent = cfg.dim_latent;
     let q = get_trans_mat(k);
     let leaky = rand_leaky(rng, cfg.dim_obs, cfg.dim_latent);
 
     let sim = match cfg.kind {
         SimulatorKind::Cosine => {
-            let mut v = Vec::with_capacity(k);
+            let mut state_params = Vec::with_capacity(k);
             for _ in 0..k {
-                v.push(rand_cosine_state(rng, cfg.dim_latent, cfg.sparsity_prob));
+                state_params.push(rand_cosine_state(rng, cfg.dim_latent, cfg.sparsity_prob));
             }
-            DynSim::Cos(v)
+            DynSim::Cos(state_params)
         }
         SimulatorKind::Poly => {
             let num_p = sklearn_poly_output_count(cfg.dim_latent, cfg.poly_degree);
-            let mut coeffs = Array3::<f32>::zeros((k, dl, num_p));
+            let mut coeffs = Array3::<f32>::zeros((k, dim_latent, num_p));
             for s in 0..k {
-                for i in 0..dl {
+                for i in 0..dim_latent {
                     for j in 0..num_p {
                         let u: f32 = rng.random_range(0.0..1.0);
                         let mut v = u - 0.5;
@@ -152,17 +152,17 @@ fn roll_sequences(
         }
     };
 
-    let mut lat = Array3::<f32>::zeros((n, t, dl));
-    let mut obs = Array3::<f32>::zeros((n, t, cfg.dim_obs));
-    let mut disc = Array2::<i32>::zeros((n, t));
+    let mut latents = Array3::<f32>::zeros((n, seq_len, dim_latent));
+    let mut obs = Array3::<f32>::zeros((n, seq_len, cfg.dim_obs));
+    let mut states = Array2::<i32>::zeros((n, seq_len));
 
-    let init_std = Normal::new(0.0f32, 0.1).unwrap();
-    let means_init: Array2<f32> = {
-        let nrm = Normal::new(0.0f32, 0.7).unwrap();
-        let mut m = Array2::<f32>::zeros((k, dl));
+    let init_noise = Normal::new(0.0f32, 0.1).unwrap();
+    let init_means: Array2<f32> = {
+        let normal = Normal::new(0.0f32, 0.7).unwrap();
+        let mut m = Array2::<f32>::zeros((k, dim_latent));
         for s in 0..k {
-            for j in 0..dl {
-                m[[s, j]] = nrm.sample(rng);
+            for j in 0..dim_latent {
+                m[[s, j]] = normal.sample(rng);
             }
         }
         m
@@ -170,44 +170,46 @@ fn roll_sequences(
 
     // Per-sequence initial state and t=0
     for ni in 0..n {
-        let s0 = rng.random_range(0..k);
-        disc[[ni, 0]] = s0 as i32;
-        for j in 0..dl {
-            lat[[ni, 0, j]] = means_init[[s0, j]] + init_std.sample(rng);
+        let init_state = rng.random_range(0..k);
+        states[[ni, 0]] = init_state as i32;
+        for j in 0..dim_latent {
+            latents[[ni, 0, j]] = init_means[[init_state, j]] + init_noise.sample(rng);
         }
     }
     {
-        let o0 = func_leaky_relu_batch(lat.slice(s![.., 0, ..]), &leaky);
-        obs.slice_mut(s![.., 0, ..]).assign(&o0);
+        let obs_t0 = func_leaky_relu_batch(latents.slice(s![.., 0, ..]), &leaky);
+        obs.slice_mut(s![.., 0, ..]).assign(&obs_t0);
     }
 
     let scale_var = 0.05f32;
     let scale_std = scale_var.sqrt();
     let step_noise = Normal::new(0.0f32, scale_std).unwrap();
 
-    for ti in 1..t {
+    for ti in 1..seq_len {
         for ni in 0..n {
-            let prev_s = disc[[ni, ti - 1]] as usize;
-            let row = q.row(prev_s);
-            let new_s = sample_from_probs(rng, row.as_slice().unwrap());
-            disc[[ni, ti]] = new_s as i32;
+            let prev_state = states[[ni, ti - 1]] as usize;
+            let trans_probs = q.row(prev_state);
+            let next_state = sample_from_probs(rng, trans_probs.as_slice().unwrap());
+            states[[ni, ti]] = next_state as i32;
 
-            let z_prev = lat.slice(s![ni, ti - 1, ..]);
+            let z_prev = latents.slice(s![ni, ti - 1, ..]);
 
-            let mean_row: Array1<f32> = match &sim {
-                DynSim::Cos(v) => func_cosine_with_sparsity(z_prev, &v[new_s]),
-                DynSim::Poly(p) => p.poly_mean_for_state(z_prev, new_s),
+            let dyn_mean: Array1<f32> = match &sim {
+                DynSim::Cos(state_params) => {
+                    func_cosine_with_sparsity(z_prev, &state_params[next_state])
+                }
+                DynSim::Poly(p) => p.poly_mean_for_state(z_prev, next_state),
             };
 
-            for j in 0..dl {
-                lat[[ni, ti, j]] = mean_row[j] + step_noise.sample(rng);
+            for j in 0..dim_latent {
+                latents[[ni, ti, j]] = dyn_mean[j] + step_noise.sample(rng);
             }
         }
-        let o_t = func_leaky_relu_batch(lat.slice(s![.., ti, ..]), &leaky);
-        obs.slice_mut(s![.., ti, ..]).assign(&o_t);
+        let obs_t = func_leaky_relu_batch(latents.slice(s![.., ti, ..]), &leaky);
+        obs.slice_mut(s![.., ti, ..]).assign(&obs_t);
     }
 
-    (lat, obs, disc)
+    (latents, obs, states)
 }
 
 fn rand_cosine_state(
@@ -215,18 +217,18 @@ fn rand_cosine_state(
     dim_latent: usize,
     sparsity_prob: f32,
 ) -> CosineStateParams {
-    let n = Normal::new(0.0f32, 0.5).unwrap();
+    let weight_dist = Normal::new(0.0f32, 0.5).unwrap();
     let mut alphas = Array3::<f32>::zeros((1, dim_latent, EMISSION_HIDDEN_DIM));
     let mut omegas = Array3::<f32>::zeros((EMISSION_HIDDEN_DIM, dim_latent, dim_latent));
     let mut betas = Array2::<f32>::zeros((dim_latent, EMISSION_HIDDEN_DIM));
     for x in alphas.iter_mut() {
-        *x = n.sample(rng);
+        *x = weight_dist.sample(rng);
     }
     for x in omegas.iter_mut() {
-        *x = n.sample(rng);
+        *x = weight_dist.sample(rng);
     }
     for x in betas.iter_mut() {
-        *x = n.sample(rng);
+        *x = weight_dist.sample(rng);
     }
     let adj = sample_adj_mat(rng, sparsity_prob, dim_latent);
     CosineStateParams {
@@ -239,10 +241,10 @@ fn rand_cosine_state(
 
 fn sample_from_probs<R: Rng + ?Sized>(rng: &mut R, p: &[f32]) -> usize {
     let u = rng.random::<f32>();
-    let mut c = 0f32;
-    for (i, pi) in p.iter().enumerate() {
-        c += *pi;
-        if u < c {
+    let mut cum_prob = 0f32;
+    for (i, prob) in p.iter().enumerate() {
+        cum_prob += *prob;
+        if u < cum_prob {
             return i;
         }
     }

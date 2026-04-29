@@ -39,8 +39,8 @@ pub fn sklearn_powers(n_features: usize, max_degree: usize) -> Vec<Vec<u32>> {
     out.push(vec![0u32; n_features]);
 
     for k in 1..=max_degree {
-        for tup in (0..n_features).combinations_with_replacement(k) {
-            out.push(bincount_indices(&tup, n_features));
+        for indices in (0..n_features).combinations_with_replacement(k) {
+            out.push(bincount_indices(&indices, n_features));
         }
     }
     out
@@ -59,10 +59,10 @@ fn bincount_indices(indices: &[usize], len: usize) -> Vec<u32> {
 pub fn expand_polynomial_row(x: &[f32], powers: &[Vec<u32>]) -> Vec<f32> {
     let n = powers.len();
     let mut row = Vec::with_capacity(n);
-    for p in powers {
+    for exponents in powers {
         let mut prod = 1.0f32;
-        for (xi, pi) in x.iter().zip(p.iter()) {
-            prod *= xi.powi(*pi as i32);
+        for (xi, exp) in x.iter().zip(exponents.iter()) {
+            prod *= xi.powi(*exp as i32);
         }
         row.push(prod);
     }

@@ -153,6 +153,7 @@ fn safetensors_roundtrip_all_tensors_and_metadata() {
         data_type: "cosine".into(),
         degree: None,
     };
+
     save_train_test(dir.path(), &tt, &manifest).unwrap();
 
     let meta_path = dir.path().join("metadata.json");
