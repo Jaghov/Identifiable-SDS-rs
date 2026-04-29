@@ -1,0 +1,12 @@
+[package]
+name = "snlds-model"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+snlds-core = { path = "../snlds-core" }
+burn = { version = "0.20.1", features = ["cpu", "autodiff"] }
+anyhow = "1"
+
+[dev-dependencies]
+snlds-data = { path = "../snlds-data" }
