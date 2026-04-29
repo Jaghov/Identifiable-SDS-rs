@@ -6,4 +6,7 @@ pub mod polynomial;
 pub mod transitions;
 
 pub use generate::{generate_train_test, GenConfig, SimulatorKind, TrainTest};
-pub use io::{load_manifest, load_tensor_f32, load_tensor_i32, save_train_test, Manifest};
+pub use io::{
+    load_manifest, load_tensor_f32, load_tensor_i32, save_train_test, Manifest,
+    MANIFEST_SCHEMA_VERSION,
+};
