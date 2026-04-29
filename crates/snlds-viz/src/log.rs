@@ -37,6 +37,93 @@ pub fn log_state_s(rec: &RecordingStream, seq_idx: i64, states: &[i32]) -> anyho
     Ok(())
 }
 
+/// Log posterior state marginals γ_{t,k} for one sequence.
+///
+/// `gamma`: `[T, K]` — each row should sum to 1. Logs one `Scalars` entity per state
+/// under `snlds/state/gamma_{k}` at each timestep.
+pub fn log_posteriors(
+    rec: &RecordingStream,
+    seq_idx: i64,
+    gamma: ArrayView2<f32>,
+) -> anyhow::Result<()> {
+    let num_timesteps = gamma.nrows();
+    let num_states = gamma.ncols();
+    for timestep in 0..num_timesteps {
+        rec.set_time_sequence("sequence", seq_idx);
+        rec.set_time_sequence("time", timestep as i64);
+        for state_idx in 0..num_states {
+            let entity_path = format!("snlds/state/gamma_{state_idx}");
+            rec.log(
+                entity_path.as_str(),
+                &rerun::Scalars::single(gamma[[timestep, state_idx]] as f64),
+            )
+            .context("log snlds/state/gamma_k")?;
+        }
+    }
+    Ok(())
+}
+
+/// Log reconstructed observations for one sequence.
+///
+/// `x_hat`: `[T, obs_dim]`.
+/// - `obs_dim == 2`: logs a single `LineStrips2D` under `snlds/obs/x_hat`
+/// - Otherwise: logs each dimension as `Scalars` under `snlds/obs/x_hat_d{dim_idx}` per timestep
+pub fn log_reconstructions(
+    rec: &RecordingStream,
+    seq_idx: i64,
+    x_hat: ArrayView2<f32>,
+) -> anyhow::Result<()> {
+    rec.set_time_sequence("sequence", seq_idx);
+    let obs_dim = x_hat.ncols();
+    if obs_dim == 2 {
+        let points: Vec<[f32; 2]> = x_hat
+            .rows()
+            .into_iter()
+            .map(|row| [row[0], row[1]])
+            .collect();
+        rec.log("snlds/obs/x_hat", &rerun::LineStrips2D::new([points]))
+            .context("log snlds/obs/x_hat")?;
+    } else {
+        let num_timesteps = x_hat.nrows();
+        for timestep in 0..num_timesteps {
+            rec.set_time_sequence("sequence", seq_idx);
+            rec.set_time_sequence("time", timestep as i64);
+            for dim_idx in 0..obs_dim {
+                let entity_path = format!("snlds/obs/x_hat_d{dim_idx}");
+                rec.log(
+                    entity_path.as_str(),
+                    &rerun::Scalars::single(x_hat[[timestep, dim_idx]] as f64),
+                )
+                .context("log snlds/obs/x_hat_d*")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Log training diagnostics for one optimizer step.
+///
+/// Uses the `train_step` timeline — does not set `sequence` or `time`.
+pub fn log_train_scalars(
+    rec: &RecordingStream,
+    step: i64,
+    elbo: f32,
+    mse: f32,
+    temperature: f32,
+) -> anyhow::Result<()> {
+    rec.set_time_sequence("train_step", step);
+    rec.log("snlds/train/elbo", &rerun::Scalars::single(elbo as f64))
+        .context("log snlds/train/elbo")?;
+    rec.log("snlds/train/mse", &rerun::Scalars::single(mse as f64))
+        .context("log snlds/train/mse")?;
+    rec.log(
+        "snlds/train/temperature",
+        &rerun::Scalars::single(temperature as f64),
+    )
+    .context("log snlds/train/temperature")?;
+    Ok(())
+}
+
 /// Log rendered frames (from `draw_sequence`) per timestep as `Image` entities.
 ///
 /// `frames`: shape `[T, res, res, 3]`, values ∈ `[0, 1]`.

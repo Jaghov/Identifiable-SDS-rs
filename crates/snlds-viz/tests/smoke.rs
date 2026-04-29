@@ -1,7 +1,9 @@
+use ndarray::Array2;
 use snlds_data::{
     generate_train_test, save_train_test, GenConfig, Manifest, SimulatorKind,
     MANIFEST_SCHEMA_VERSION,
 };
+use snlds_viz::{log_posteriors, log_reconstructions, log_train_scalars};
 use std::process::Command;
 
 fn tiny_cfg() -> (GenConfig, Manifest) {
@@ -29,6 +31,34 @@ fn tiny_cfg() -> (GenConfig, Manifest) {
         degree: None,
     };
     (cfg, manifest)
+}
+
+#[test]
+fn log_posteriors_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_posteriors")
+        .memory()
+        .unwrap();
+    // [T=3, K=2] uniform posteriors — each row sums to 1
+    let gamma = Array2::from_shape_vec((3, 2), vec![0.5f32, 0.5, 0.5, 0.5, 0.5, 0.5]).unwrap();
+    log_posteriors(&rec, 0, gamma.view()).expect("log_posteriors should not fail");
+}
+
+#[test]
+fn log_train_scalars_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_train_scalars")
+        .memory()
+        .unwrap();
+    log_train_scalars(&rec, 0, -1.5, 0.02, 1.0).expect("log_train_scalars should not fail");
+}
+
+#[test]
+fn log_reconstructions_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_reconstructions")
+        .memory()
+        .unwrap();
+    // obs_dim == 2: takes the LineStrips2D path
+    let x_hat = Array2::from_shape_vec((3, 2), vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6]).unwrap();
+    log_reconstructions(&rec, 0, x_hat.view()).expect("log_reconstructions should not fail");
 }
 
 #[test]
