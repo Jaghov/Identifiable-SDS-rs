@@ -1,3 +1,5 @@
+pub mod hmm;
+
 #[cfg(test)]
 mod tests {
     use burn::backend::cpu::CpuDevice;
