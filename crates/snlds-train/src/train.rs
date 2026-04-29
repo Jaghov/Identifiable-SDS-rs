@@ -1,6 +1,7 @@
 //! Adam minibatch training loop for [`VariationalSnlds`].
 
 use crate::data::ObsTensor;
+use crate::snapshot::{TrainSnapshot, DEFAULT_OBS_NOISE_VAR, TRAIN_SNAPSHOT_SCHEMA_VERSION};
 use anyhow::Context;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::module::Module;
@@ -27,6 +28,10 @@ pub struct TrainConfig {
     pub grad_clip: f32,
     pub checkpoint_every: usize,
     pub hidden_dim: usize,
+    /// Variance of the diagonal Gaussian observation noise used in the ELBO
+    /// reconstruction term. Persisted in `train_config.json` so `snlds-eval` can
+    /// reproduce the same number at inference time.
+    pub obs_noise_var: f32,
     pub seed: u64,
     pub resume_from: Option<PathBuf>,
 }
@@ -44,6 +49,7 @@ impl Default for TrainConfig {
             grad_clip: 1.0,
             checkpoint_every: 10,
             hidden_dim: 64,
+            obs_noise_var: DEFAULT_OBS_NOISE_VAR,
             seed: 0,
             resume_from: None,
         }
@@ -108,6 +114,17 @@ pub fn train_with_model<B: AutodiffBackend>(
     std::fs::create_dir_all(&config.output_dir)
         .with_context(|| format!("create output dir {:?}", config.output_dir))?;
 
+    let snapshot = TrainSnapshot {
+        schema_version: TRAIN_SNAPSHOT_SCHEMA_VERSION,
+        hidden_dim: config.hidden_dim,
+        beta: config.beta,
+        temperature: config.temperature,
+        obs_noise_var: config.obs_noise_var,
+    };
+    snapshot
+        .save(&config.output_dir)
+        .context("write train_config.json snapshot")?;
+
     let num_sequences = manifest.num_samples;
     let mut rng = StdRng::seed_from_u64(config.seed);
     let obs_full = obs_tensor.obs;
@@ -128,7 +145,7 @@ pub fn train_with_model<B: AutodiffBackend>(
             let output = model.forward(
                 batch_obs,
                 config.beta,
-                manifest_obs_noise(manifest),
+                config.obs_noise_var,
                 config.temperature,
             );
             let loss = output.elbo.clone().neg().sum();
@@ -162,12 +179,6 @@ pub fn train_with_model<B: AutodiffBackend>(
 
     save_checkpoint(&model, &config.output_dir, config.epochs.saturating_sub(1))?;
     Ok(history)
-}
-
-fn manifest_obs_noise(_manifest: &snlds_data::Manifest) -> f32 {
-    // M1 export does not record observation noise variance; default to the model's
-    // canonical value (matches Python `var = 5e-4`).
-    5e-4
 }
 
 fn gather_batch<B: AutodiffBackend>(obs: Tensor<B, 3>, indices: &[usize]) -> Tensor<B, 3> {

@@ -5,9 +5,13 @@
 //! and saves checkpoints with [`burn::record::CompactRecorder`].
 
 pub mod data;
+pub mod snapshot;
 pub mod train;
 pub mod warm_start;
 
 pub use data::{load_train_obs, load_train_obs_array, ObsTensor};
+pub use snapshot::{
+    TrainSnapshot, DEFAULT_OBS_NOISE_VAR, TRAIN_SNAPSHOT_FILENAME, TRAIN_SNAPSHOT_SCHEMA_VERSION,
+};
 pub use train::{build_model_config, train, train_with_model, TrainConfig};
 pub use warm_start::{run_warm_start, MsmWarmStartConfig};

@@ -22,9 +22,26 @@ use ndarray::{Array2, Array3, Axis};
 use snlds_data::Manifest;
 use snlds_model::{SnldsConfig, VariationalSnlds};
 use snlds_train::data::load_train_obs;
+use snlds_train::TrainSnapshot;
 use std::path::PathBuf;
 
+/// Resolved hyperparameters used during evaluation. All fields come from the
+/// training-time snapshot ([`TrainSnapshot`]) by default and can be overridden
+/// individually via [`EvalConfig`] before calling [`run_eval`].
+#[derive(Clone, Debug)]
+pub struct ResolvedHparams {
+    pub hidden_dim: usize,
+    pub temperature: f32,
+    pub obs_noise_var: f32,
+    pub beta: f32,
+}
+
 /// Configuration for one evaluation run.
+///
+/// Hyperparameters that must match the training run (`hidden_dim`, `temperature`,
+/// `obs_noise_var`, `beta`) are loaded from the `train_config.json` snapshot
+/// written by `snlds-train` next to its checkpoints. Pass `Some(…)` on any field
+/// to override the snapshot value (e.g. annealing temperature for inference).
 #[derive(Clone, Debug)]
 pub struct EvalConfig {
     /// Directory containing `sequences.safetensors` + `metadata.json`.
@@ -37,18 +54,50 @@ pub struct EvalConfig {
     pub spawn: bool,
     /// Number of sequences from `obs_train` to log.
     pub sequences: usize,
-    /// MLP hidden dimension used during training (must match the checkpoint).
-    pub hidden_dim: usize,
-    /// Softmax temperature for `q_logits` / `pi_logits` (matches the training value used at inference).
-    pub temperature: f32,
+    /// Override the snapshot's `hidden_dim` (model layout — must match the checkpoint
+    /// or `load_record` will fail).
+    pub hidden_dim_override: Option<usize>,
+    /// Override the snapshot's softmax temperature for `q_logits` / `pi_logits`.
+    pub temperature_override: Option<f32>,
+    /// Override the snapshot's observation noise variance used in the ELBO.
+    pub obs_noise_var_override: Option<f32>,
+    /// Override the snapshot's `beta` weight on the discrete-state ELBO term. Must be
+    /// strictly positive so the forward pass populates posteriors.
+    pub beta_override: Option<f32>,
+}
+
+/// Resolve the per-run hyperparameters from the training snapshot, applying any
+/// overrides set on `config`.
+pub fn resolve_hparams(config: &EvalConfig) -> anyhow::Result<ResolvedHparams> {
+    let snapshot = TrainSnapshot::load_for_checkpoint(&config.checkpoint).with_context(|| {
+        format!(
+            "load train_config.json snapshot next to checkpoint {:?}",
+            config.checkpoint
+        )
+    })?;
+    let hparams = ResolvedHparams {
+        hidden_dim: config.hidden_dim_override.unwrap_or(snapshot.hidden_dim),
+        temperature: config.temperature_override.unwrap_or(snapshot.temperature),
+        obs_noise_var: config
+            .obs_noise_var_override
+            .unwrap_or(snapshot.obs_noise_var),
+        beta: config.beta_override.unwrap_or(snapshot.beta),
+    };
+    anyhow::ensure!(
+        hparams.beta > 0.0,
+        "beta must be > 0 to populate posteriors (got {})",
+        hparams.beta,
+    );
+    Ok(hparams)
 }
 
 /// Run inference + Rerun logging end-to-end.
 pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::Result<()> {
+    let hparams = resolve_hparams(config)?;
     let obs_tensor = load_train_obs::<B>(&config.data_dir, device)
         .with_context(|| format!("load obs_train from {:?}", config.data_dir))?;
     let manifest = obs_tensor.manifest.clone();
-    let model = load_checkpoint::<B>(config, &manifest, device)?;
+    let model = load_checkpoint::<B>(config, &hparams, &manifest, device)?;
 
     let num_seqs = config.sequences.min(manifest.num_samples);
     if num_seqs == 0 {
@@ -65,12 +114,11 @@ pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::
             .clone()
             .slice([0..num_seqs, 0..manifest.seq_length, 0..manifest.dim_obs]);
 
-    // beta > 0 guarantees state_posteriors is populated.
     let forward_output = model.forward(
         obs_subset,
-        /* beta = */ 1.0,
-        /* obs_noise_var = */ 0.1,
-        config.temperature,
+        hparams.beta,
+        hparams.obs_noise_var,
+        hparams.temperature,
     );
     let gamma = forward_output
         .state_posteriors
@@ -78,7 +126,7 @@ pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::
     let x_hat = forward_output.obs_reconstructed;
 
     // Q = softmax(q_logits / temperature, dim=-1)  — same convention as the model's forward pass.
-    let q_inferred_tensor = softmax(model.q_logits.val() / config.temperature, 1);
+    let q_inferred_tensor = softmax(model.q_logits.val() / hparams.temperature, 1);
     let q_inferred = tensor2_to_array(q_inferred_tensor)?;
     let gamma_array = tensor3_to_array(gamma)?;
     let x_hat_array = tensor3_to_array(x_hat)?;
@@ -132,13 +180,14 @@ pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::
 
 fn load_checkpoint<B: Backend>(
     config: &EvalConfig,
+    hparams: &ResolvedHparams,
     manifest: &Manifest,
     device: &B::Device,
 ) -> anyhow::Result<VariationalSnlds<B>> {
     let snlds_config = SnldsConfig::new(
         manifest.dim_obs,
         manifest.dim_latent,
-        config.hidden_dim,
+        hparams.hidden_dim,
         manifest.num_states,
     );
     let model: VariationalSnlds<B> = snlds_config.init(device);

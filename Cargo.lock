@@ -7471,6 +7471,8 @@ dependencies = [
  "clap",
  "ndarray 0.16.1",
  "rand 0.9.4",
+ "serde",
+ "serde_json",
  "snlds-data",
  "snlds-model",
  "snlds-msm",

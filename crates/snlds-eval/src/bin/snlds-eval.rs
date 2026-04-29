@@ -17,6 +17,8 @@ struct Cli {
     data_dir: PathBuf,
 
     /// Path to a checkpoint produced by `snlds-train`.
+    /// `train_config.json` (written next to the checkpoint by `snlds-train`) is
+    /// loaded automatically; CLI overrides below take precedence when set.
     #[arg(long)]
     checkpoint: PathBuf,
 
@@ -32,13 +34,21 @@ struct Cli {
     #[arg(long, default_value_t = 5)]
     sequences: usize,
 
-    /// Hidden MLP dimension used during training (must match checkpoint).
-    #[arg(long, default_value_t = 64)]
-    hidden_dim: usize,
+    /// Override the snapshot's MLP hidden dimension (must match the checkpoint).
+    #[arg(long)]
+    hidden_dim: Option<usize>,
 
-    /// Softmax temperature applied to `q_logits` / `pi_logits` during inference.
-    #[arg(long, default_value_t = 1.0)]
-    temperature: f32,
+    /// Override the snapshot's softmax temperature for `q_logits` / `pi_logits`.
+    #[arg(long)]
+    temperature: Option<f32>,
+
+    /// Override the snapshot's observation noise variance (ELBO reconstruction term).
+    #[arg(long)]
+    obs_noise_var: Option<f32>,
+
+    /// Override the snapshot's `beta` weight on the discrete-state ELBO term (must be > 0).
+    #[arg(long)]
+    beta: Option<f32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -50,8 +60,10 @@ fn main() -> anyhow::Result<()> {
         output: cli.output,
         spawn: cli.spawn,
         sequences: cli.sequences,
-        hidden_dim: cli.hidden_dim,
-        temperature: cli.temperature,
+        hidden_dim_override: cli.hidden_dim,
+        temperature_override: cli.temperature,
+        obs_noise_var_override: cli.obs_noise_var,
+        beta_override: cli.beta,
     };
     run_eval::<Backend>(&config, &device).context("run snlds-eval")
 }

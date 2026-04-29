@@ -83,6 +83,7 @@ Inherit **M0** gates: `cargo fmt --check`, `cargo clippy --workspace --all-targe
 |------|-------------|
 | 2026-04-29 | **Merged:** `snlds-viz` exposes `log_posteriors`, `log_reconstructions`, `log_train_scalars` + smoke tests. Entity paths use `gamma_{k}` (indexed), not a literal `gamma_k` suffix. |
 | 2026-04-29 | **Markov + segmentation views (feat/m-viz-graphs):** new `snlds-viz` API `log_transition_matrix` (graph + sibling weight heatmap), `log_state_strip`, `log_gamma_heatmap`; centralised palettes/anchors in `crates/snlds-viz/src/colormap.rs`. `snlds-viz` binary surfaces `q_true` graph + `strip_true` per sequence. New **`snlds-eval`** crate consumes a checkpoint and logs `q_inferred`, `strip_inferred`, `snlds/state/gamma` heatmap, and reconstructions. |
+| 2026-04-29 | **Train/eval hyperparameter snapshot:** `snlds-train` writes `<output_dir>/train_config.json` (`hidden_dim`, `beta`, `temperature`, `obs_noise_var`); `snlds-eval` loads it automatically (CLI flags become optional overrides), so inference hyperparameters always match training without re-typing them. |
 
 ---
 
