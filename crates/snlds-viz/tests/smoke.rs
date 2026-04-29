@@ -3,7 +3,10 @@ use snlds_data::{
     generate_train_test, save_train_test, GenConfig, Manifest, SimulatorKind,
     MANIFEST_SCHEMA_VERSION,
 };
-use snlds_viz::{log_posteriors, log_reconstructions, log_train_scalars};
+use snlds_viz::{
+    log_gamma_heatmap, log_posteriors, log_reconstructions, log_state_strip, log_train_scalars,
+    log_transition_matrix,
+};
 use std::process::Command;
 
 fn tiny_cfg() -> (GenConfig, Manifest) {
@@ -59,6 +62,46 @@ fn log_reconstructions_no_panic() {
     // obs_dim == 2: takes the LineStrips2D path
     let x_hat = Array2::from_shape_vec((3, 2), vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6]).unwrap();
     log_reconstructions(&rec, 0, x_hat.view()).expect("log_reconstructions should not fail");
+}
+
+#[test]
+fn log_transition_matrix_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_q")
+        .memory()
+        .unwrap();
+    let q = Array2::from_shape_vec(
+        (3, 3),
+        vec![0.7_f32, 0.2, 0.1, 0.1, 0.8, 0.1, 0.0, 0.0, 1.0],
+    )
+    .unwrap();
+    log_transition_matrix(&rec, "snlds/markov/q_true", q.view())
+        .expect("log_transition_matrix should not fail");
+}
+
+#[test]
+fn log_state_strip_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_strip")
+        .memory()
+        .unwrap();
+    let states = vec![0_i32, 1, 1, 2, 0, 2];
+    log_state_strip(&rec, "snlds/state/strip_true", &states)
+        .expect("log_state_strip should not fail");
+}
+
+#[test]
+fn log_gamma_heatmap_no_panic() {
+    let (rec, _storage) = rerun::RecordingStreamBuilder::new("test_gamma_heatmap")
+        .memory()
+        .unwrap();
+    let gamma = Array2::from_shape_vec(
+        (4, 3),
+        vec![
+            1.0_f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.2, 0.3, 0.5, 0.0, 0.0, 1.0,
+        ],
+    )
+    .unwrap();
+    log_gamma_heatmap(&rec, "snlds/state/gamma", gamma.view())
+        .expect("log_gamma_heatmap should not fail");
 }
 
 #[test]

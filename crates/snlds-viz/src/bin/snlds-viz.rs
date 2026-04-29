@@ -55,6 +55,7 @@ fn main() -> anyhow::Result<()> {
     let t = manifest.seq_length;
     let d_lat = manifest.dim_latent;
     let d_obs = manifest.dim_obs;
+    let num_states = manifest.num_states;
 
     if args.render && d_lat != 2 {
         anyhow::bail!("--render requires dim_latent == 2 (dataset has {d_lat})");
@@ -65,6 +66,10 @@ fn main() -> anyhow::Result<()> {
     let obs = load_tensor_f32(&st_path, obs_key).with_context(|| format!("load {obs_key}"))?;
     let states =
         load_tensor_i32(&st_path, state_key).with_context(|| format!("load {state_key}"))?;
+
+    let q_true_flat = load_tensor_f32(&st_path, "q_true").context("load q_true")?;
+    let q_true =
+        Array2::from_shape_vec([num_states, num_states], q_true_flat).context("reshape q_true")?;
 
     let num_seqs = args.sequences.min(n);
 
@@ -78,9 +83,14 @@ fn main() -> anyhow::Result<()> {
             .with_context(|| format!("open output {:?}", args.output))?
     };
 
+    // Log the ground-truth Markov chain once (sequence-independent).
+    log::log_transition_matrix(&rec, "snlds/markov/q_true", q_true.view())?;
+
     for seq in 0..num_seqs {
         let seq_states = &states[seq * t..(seq + 1) * t];
         log::log_state_s(&rec, seq as i64, seq_states)?;
+        rec.set_time_sequence("sequence", seq as i64);
+        log::log_state_strip(&rec, "snlds/state/strip_true", seq_states)?;
 
         if d_lat == 2 {
             let lat_arr = Array2::from_shape_vec(

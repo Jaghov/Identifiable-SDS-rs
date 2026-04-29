@@ -1,0 +1,22 @@
+[package]
+name = "snlds-eval"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "snlds-eval"
+path = "src/bin/snlds-eval.rs"
+
+[dependencies]
+snlds-data = { path = "../snlds-data" }
+snlds-model = { path = "../snlds-model" }
+snlds-train = { path = "../snlds-train" }
+snlds-viz = { path = "../snlds-viz" }
+burn = { version = "0.20.1", features = ["ndarray"] }
+ndarray = { version = "0.16", features = ["std"] }
+rerun = { version = "0.31", default-features = false, features = ["sdk"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

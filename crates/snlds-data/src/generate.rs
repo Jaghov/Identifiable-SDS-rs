@@ -56,6 +56,13 @@ pub struct TrainTest {
     pub latents_test: Array3<f32>,
     pub obs_test: Array3<f32>,
     pub states_test: Array2<i32>,
+    /// Ground-truth Markov transition matrix `[K, K]` produced by
+    /// [`crate::transitions::get_trans_mat`]. Persisted as `q_true` (F32) since schema v3 so
+    /// downstream viz / eval can compare against a learned `Q`.
+    pub q_true: Array2<f32>,
+    /// Ground-truth initial state distribution `[K]`. The Python reference samples the first
+    /// state uniformly across `K`, so this is `1/K` everywhere unless the simulator is changed.
+    pub pi_true: Array1<f32>,
 }
 
 /// Generate train (`N=num_samples`) and test (`max(1, num_samples // 10)`) splits.
@@ -74,6 +81,8 @@ fn generate_split(
 ) -> TrainTest {
     let (latents_train, obs_train, states_train) = roll_sequences(&mut rng, cfg, n_train);
     let (latents_test, obs_test, states_test) = roll_sequences(&mut rng, cfg, n_test);
+    let q_true = crate::transitions::get_trans_mat(cfg.num_states);
+    let pi_true = Array1::from_elem(cfg.num_states, 1.0 / cfg.num_states as f32);
     TrainTest {
         latents_train,
         obs_train,
@@ -81,6 +90,8 @@ fn generate_split(
         latents_test,
         obs_test,
         states_test,
+        q_true,
+        pi_true,
     }
 }
 

@@ -7421,6 +7421,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "snlds-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "burn",
+ "clap",
+ "ndarray 0.16.1",
+ "rerun",
+ "snlds-data",
+ "snlds-model",
+ "snlds-train",
+ "snlds-viz",
+ "tempfile",
+]
+
+[[package]]
 name = "snlds-model"
 version = "0.1.0"
 dependencies = [
