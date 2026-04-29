@@ -7,7 +7,7 @@ use snlds_data::{
 };
 use snlds_train::{
     build_model_config, load_train_obs, load_train_obs_array, run_warm_start, train,
-    train_with_model, MsmWarmStartConfig, TrainConfig,
+    train_with_model, MsmWarmStartConfig, TrainConfig, TrainSnapshot, TRAIN_SNAPSHOT_FILENAME,
 };
 use std::process::Command;
 
@@ -63,6 +63,7 @@ fn train_one_step_no_panic() {
         grad_clip: 1.0,
         checkpoint_every: 0,
         hidden_dim: 8,
+        obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
     };
@@ -74,6 +75,50 @@ fn train_one_step_no_panic() {
         "mean loss not finite: {}",
         history[0].mean_loss
     );
+}
+
+#[test]
+fn snapshot_persisted_next_to_checkpoint() {
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let output_dir = tempfile::tempdir().expect("output tempdir");
+    tiny_data(data_dir.path());
+
+    let device = NdArrayDevice::default();
+    let obs_tensor =
+        load_train_obs::<TrainBackend>(data_dir.path(), &device).expect("load obs_train");
+
+    let config = TrainConfig {
+        data_dir: data_dir.path().into(),
+        output_dir: output_dir.path().into(),
+        epochs: 1,
+        batch_size: 2,
+        learning_rate: 3e-4,
+        beta: 0.9,
+        temperature: 0.7,
+        grad_clip: 1.0,
+        checkpoint_every: 1,
+        hidden_dim: 12,
+        obs_noise_var: 7e-4,
+        seed: 0,
+        resume_from: None,
+    };
+    train::<TrainBackend>(&config, obs_tensor, &device).expect("train");
+
+    let snapshot_path = output_dir.path().join(TRAIN_SNAPSHOT_FILENAME);
+    assert!(
+        snapshot_path.exists(),
+        "expected snapshot at {snapshot_path:?}"
+    );
+    let loaded = TrainSnapshot::load_from_dir(output_dir.path()).expect("load snapshot");
+    assert_eq!(loaded.hidden_dim, 12);
+    assert!((loaded.beta - 0.9).abs() < 1e-6);
+    assert!((loaded.temperature - 0.7).abs() < 1e-6);
+    assert!((loaded.obs_noise_var - 7e-4).abs() < 1e-9);
+
+    let checkpoint_path = output_dir.path().join("checkpoint_0000.mpk");
+    let from_checkpoint =
+        TrainSnapshot::load_for_checkpoint(&checkpoint_path).expect("load via checkpoint path");
+    assert_eq!(from_checkpoint, loaded);
 }
 
 #[test]
@@ -97,6 +142,7 @@ fn checkpoint_round_trip() {
         grad_clip: 1.0,
         checkpoint_every: 1,
         hidden_dim: 8,
+        obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
     };
@@ -141,6 +187,7 @@ fn warm_start_then_train_no_panic() {
         grad_clip: 1.0,
         checkpoint_every: 0,
         hidden_dim: 8,
+        obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
     };

@@ -5,7 +5,7 @@ use burn::backend::{ndarray::NdArrayDevice, Autodiff, NdArray};
 use clap::Parser;
 use snlds_train::{
     build_model_config, load_train_obs, load_train_obs_array, run_warm_start, train_with_model,
-    MsmWarmStartConfig, TrainConfig,
+    MsmWarmStartConfig, TrainConfig, DEFAULT_OBS_NOISE_VAR,
 };
 use std::path::PathBuf;
 
@@ -45,6 +45,11 @@ struct Cli {
 
     #[arg(long, default_value_t = 64)]
     hidden_dim: usize,
+
+    /// Observation noise variance used in the ELBO reconstruction term.
+    /// Persisted in `<output_dir>/train_config.json`.
+    #[arg(long, default_value_t = DEFAULT_OBS_NOISE_VAR)]
+    obs_noise_var: f32,
 
     #[arg(long, default_value_t = 0)]
     seed: u64,
@@ -95,6 +100,7 @@ fn main() -> Result<()> {
         grad_clip: cli.grad_clip,
         checkpoint_every: cli.checkpoint_every,
         hidden_dim: cli.hidden_dim,
+        obs_noise_var: cli.obs_noise_var,
         seed: cli.seed,
         resume_from: cli.resume,
     };

@@ -16,6 +16,8 @@ use std::fs;
 ///   initial distribution `pi_true` `[K]` so downstream viz / eval tools can compare against
 ///   a learned `Q`. Tensor names: `q_true`, `pi_true`.
 /// - **v2** (M1): `states_*` stored as **`I32`** alongside the existing F32 tensors.
+/// - **v1** (initial M1): `latents_*`, `obs_*` as `F32` and `states_*` accidentally as `F32`
+///   (mirrored a Python `float64` layout); replaced by v2.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 3;
 
 /// Run metadata written next to `sequences.safetensors`.
