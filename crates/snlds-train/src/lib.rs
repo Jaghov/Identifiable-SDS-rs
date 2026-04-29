@@ -6,6 +6,8 @@
 
 pub mod data;
 pub mod train;
+pub mod warm_start;
 
-pub use data::{load_train_obs, ObsTensor};
-pub use train::{train, TrainConfig};
+pub use data::{load_train_obs, load_train_obs_array, ObsTensor};
+pub use train::{build_model_config, train, train_with_model, TrainConfig};
+pub use warm_start::{run_warm_start, MsmWarmStartConfig};

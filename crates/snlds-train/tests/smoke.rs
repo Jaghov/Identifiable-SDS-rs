@@ -5,7 +5,10 @@ use snlds_data::{
     generate_train_test, save_train_test, GenConfig, Manifest, SimulatorKind,
     MANIFEST_SCHEMA_VERSION,
 };
-use snlds_train::{load_train_obs, train, TrainConfig};
+use snlds_train::{
+    build_model_config, load_train_obs, load_train_obs_array, run_warm_start, train,
+    train_with_model, MsmWarmStartConfig, TrainConfig,
+};
 use std::process::Command;
 
 type TrainBackend = Autodiff<NdArray<f32>>;
@@ -114,6 +117,50 @@ fn checkpoint_round_trip() {
         ..config
     };
     train::<TrainBackend>(&resume_config, obs_tensor_resume, &device).expect("resume train");
+}
+
+#[test]
+fn warm_start_then_train_no_panic() {
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let output_dir = tempfile::tempdir().expect("output tempdir");
+    tiny_data(data_dir.path());
+
+    let device = NdArrayDevice::default();
+    let obs_tensor =
+        load_train_obs::<TrainBackend>(data_dir.path(), &device).expect("load obs_train");
+    let (obs_array, _manifest) = load_train_obs_array(data_dir.path()).expect("load obs array");
+
+    let config = TrainConfig {
+        data_dir: data_dir.path().into(),
+        output_dir: output_dir.path().into(),
+        epochs: 1,
+        batch_size: 2,
+        learning_rate: 3e-4,
+        beta: 1.0,
+        temperature: 1.0,
+        grad_clip: 1.0,
+        checkpoint_every: 0,
+        hidden_dim: 8,
+        seed: 0,
+        resume_from: None,
+    };
+    let snlds_config = build_model_config(&config, &obs_tensor.manifest);
+
+    let warm_config = MsmWarmStartConfig {
+        restarts: 1,
+        epochs: 1,
+        batch_size: 2,
+        learning_rate: 1e-3,
+        hidden_dim: 4,
+    };
+    let warm_started =
+        run_warm_start::<TrainBackend>(&warm_config, &snlds_config, &obs_array, &device)
+            .expect("warm-start");
+
+    let history = train_with_model::<TrainBackend>(&config, warm_started, obs_tensor, &device)
+        .expect("train post warm-start");
+    assert_eq!(history.len(), 1);
+    assert!(history[0].mean_loss.is_finite());
 }
 
 #[test]

@@ -58,20 +58,40 @@ pub struct EpochStats {
     pub mean_recon: f32,
 }
 
-/// Run the training loop. Returns per-epoch stats.
+/// Build a fresh `VariationalSnlds` from `manifest` + `config.hidden_dim`.
+pub fn build_model_config(config: &TrainConfig, manifest: &snlds_data::Manifest) -> SnldsConfig {
+    SnldsConfig::new(
+        manifest.dim_obs,
+        manifest.dim_latent,
+        config.hidden_dim,
+        manifest.num_states,
+    )
+}
+
+/// Run the training loop with a freshly initialised model. See
+/// [`train_with_model`] for the variant that accepts an externally prepared
+/// model (e.g. from M5 warm-start).
 pub fn train<B: AutodiffBackend>(
     config: &TrainConfig,
     obs_tensor: ObsTensor<B>,
     device: &B::Device,
 ) -> anyhow::Result<Vec<EpochStats>> {
+    let model_config = build_model_config(config, &obs_tensor.manifest);
+    let model: VariationalSnlds<B> = model_config.init(device);
+    train_with_model(config, model, obs_tensor, device)
+}
+
+/// Run the training loop starting from `initial_model`. Used by the M5 warm-start
+/// path so the caller can hand in a model whose parameters were transferred from
+/// a fitted [`snlds_msm::NeuralMsm`].
+pub fn train_with_model<B: AutodiffBackend>(
+    config: &TrainConfig,
+    initial_model: VariationalSnlds<B>,
+    obs_tensor: ObsTensor<B>,
+    device: &B::Device,
+) -> anyhow::Result<Vec<EpochStats>> {
     let manifest = &obs_tensor.manifest;
-    let model_config = SnldsConfig::new(
-        manifest.dim_obs,
-        manifest.dim_latent,
-        config.hidden_dim,
-        manifest.num_states,
-    );
-    let mut model: VariationalSnlds<B> = model_config.init(device);
+    let mut model = initial_model;
 
     if let Some(path) = config.resume_from.as_ref() {
         let recorder = CompactRecorder::new();

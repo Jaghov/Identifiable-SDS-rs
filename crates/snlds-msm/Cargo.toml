@@ -1,21 +1,18 @@
 [package]
-name = "snlds-train"
+name = "snlds-msm"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "snlds-train"
-path = "src/bin/snlds-train.rs"
-
 [dependencies]
+snlds-core = { path = "../snlds-core" }
 snlds-model = { path = "../snlds-model" }
-snlds-data = { path = "../snlds-data" }
-snlds-msm = { path = "../snlds-msm" }
 burn = { version = "0.20.1", features = ["ndarray", "autodiff"] }
 ndarray = { version = "0.16", features = ["std"] }
+linfa = "0.8"
+linfa-reduction = "0.8"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
 rand = "0.9"
 
 [dev-dependencies]
+snlds-data = { path = "../snlds-data" }
 tempfile = "3"
