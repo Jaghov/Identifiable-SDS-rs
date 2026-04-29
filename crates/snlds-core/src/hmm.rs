@@ -41,8 +41,12 @@ pub fn log_forward<B: Backend>(
 
     // t = 1..T
     for t in 1..t_len {
-        let prev = log_alphas.last().unwrap().clone(); // [N, K]
-                                                       // [N, K, 1] + [N, K, K] broadcast sum-over-K_from → [N, K_to]
+        // prev: [N, K]
+        let prev = log_alphas
+            .last()
+            .expect("log_alphas non-empty: pushed init step before loop")
+            .clone();
+        // [N, K, 1] + [N, K, K] broadcast sum-over-K_from → [N, K_to]
         let prev_3d = prev.unsqueeze_dim::<3>(2); // [N, K_from, 1]
         let log_trans_exp = log_trans.clone().unsqueeze::<3>().expand([n, k, k]); // [N, K_from, K_to]
         let log_pred = logsumexp_dim::<B, 3>(prev_3d + log_trans_exp, 1).reshape([n, k]); // [N, K_to]
