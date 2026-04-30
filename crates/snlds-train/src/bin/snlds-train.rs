@@ -2,12 +2,24 @@
 
 use anyhow::Result;
 use burn::backend::{ndarray::NdArrayDevice, Autodiff, NdArray};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use snlds_model::EncoderKind;
 use snlds_train::{
     build_model_config, load_train_obs, load_train_obs_array, run_warm_start, train_with_model,
     MsmWarmStartConfig, TrainConfig, DEFAULT_OBS_NOISE_VAR,
 };
 use std::path::PathBuf;
+
+/// CLI surface for [`EncoderKind`]. Kept separate so the model crate stays free
+/// of `clap` derive details and we can validate the (`encoder`, `res`) pair as
+/// one unit before constructing the real enum.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum EncoderCli {
+    /// Two-hidden-layer leaky-ReLU MLP pair (Python `factored` parity, default).
+    Mlp,
+    /// CNN encoder/decoder pair for flat RGB image observations. Requires `--res`.
+    Cnn,
+}
 
 type TrainBackend = Autodiff<NdArray<f32>>;
 
@@ -81,6 +93,32 @@ struct Cli {
     /// Hidden dim for the MSM transition MLPs.
     #[arg(long, default_value_t = 16)]
     msm_hidden_dim: usize,
+
+    /// Encoder/decoder family. Default `mlp` (Python `factored` parity); `cnn`
+    /// requires `--res` and assumes flat-RGB image observations of length
+    /// `3 * res * res`.
+    #[arg(long, value_enum, default_value_t = EncoderCli::Mlp)]
+    encoder: EncoderCli,
+
+    /// Image resolution for `--encoder cnn`. Required when `encoder=cnn`;
+    /// must be a power of two `≥ 16`.
+    #[arg(long)]
+    res: Option<usize>,
+}
+
+/// Resolve the `(encoder, res)` CLI pair into an [`EncoderKind`], surfacing
+/// the "missing `--res`" and "stray `--res`" cases as user-facing errors.
+fn resolve_encoder_kind(encoder: EncoderCli, res: Option<usize>) -> Result<EncoderKind> {
+    match (encoder, res) {
+        (EncoderCli::Mlp, None) => Ok(EncoderKind::Mlp),
+        (EncoderCli::Mlp, Some(res)) => {
+            anyhow::bail!("--res {res} given with --encoder mlp; --res is only valid for cnn")
+        }
+        (EncoderCli::Cnn, Some(res)) => Ok(EncoderKind::Cnn { res }),
+        (EncoderCli::Cnn, None) => {
+            anyhow::bail!("--encoder cnn requires --res <usize> (e.g. 16, 32)")
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -88,6 +126,7 @@ fn main() -> Result<()> {
 
     let device = NdArrayDevice::default();
     let obs_tensor = load_train_obs::<TrainBackend>(&cli.data_dir, &device)?;
+    let kind = resolve_encoder_kind(cli.encoder, cli.res)?;
 
     let config = TrainConfig {
         data_dir: cli.data_dir.clone(),
@@ -103,6 +142,7 @@ fn main() -> Result<()> {
         obs_noise_var: cli.obs_noise_var,
         seed: cli.seed,
         resume_from: cli.resume,
+        kind,
     };
 
     let snlds_config = build_model_config(&config, &obs_tensor.manifest);

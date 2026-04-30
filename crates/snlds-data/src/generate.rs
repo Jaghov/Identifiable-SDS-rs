@@ -24,6 +24,27 @@ pub enum SimulatorKind {
     Poly,
 }
 
+/// Observation channel for the simulator.
+///
+/// The default `Vector` path emits via the leaky-ReLU MLP (`func_leaky_relu_batch`)
+/// matching the Python `factored` setup. The `Image { res }` path renders each 2-D
+/// latent into a flat `[res*res*3]` RGB frame using
+/// [`crate::render::draw_sequence`] and discards the leaky-ReLU emission entirely;
+/// `dim_latent` must be `2` and `dim_obs` must be `res * res * 3`. The model side
+/// re-derives the spatial shape via `EncoderKind::Cnn { res }` (see `snlds-model`),
+/// so the obs tensor stays flat on disk and no manifest schema bump is needed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ObservationKind {
+    /// Leaky-ReLU emission MLP from latent to `dim_obs` (Python parity).
+    #[default]
+    Vector,
+    /// Render 2-D latents to flat RGB images via `draw_sequence`.
+    Image {
+        /// Spatial side length in pixels (frame is `res × res × 3`).
+        res: usize,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct GenConfig {
     pub seed: u64,
@@ -59,6 +80,11 @@ pub struct GenConfig {
     /// `1e-6` (validated by [`generate_train_test`]). Drives both the per-sequence draw
     /// of `s_0` and the persisted `pi_true` tensor.
     pub initial_distribution: Option<Vec<f32>>,
+    /// Observation channel. Default `Vector` (leaky-ReLU emission, Python parity);
+    /// `Image { res }` renders 2-D latents into flat `[res*res*3]` RGB frames via
+    /// [`crate::render::draw_sequence`]. When `Image`, [`generate_train_test`] enforces
+    /// `dim_latent == 2` and `dim_obs == res * res * 3` and `res >= 1`.
+    pub observation: ObservationKind,
 }
 
 impl Default for GenConfig {
@@ -78,6 +104,7 @@ impl Default for GenConfig {
             transition_step_var: DEFAULT_TRANSITION_STEP_VAR,
             emission_hidden_dim: EMISSION_HIDDEN_DIM,
             initial_distribution: None,
+            observation: ObservationKind::Vector,
         }
     }
 }
@@ -106,7 +133,9 @@ pub struct TrainTest {
 /// - `init_noise_std` / `init_mean_std` not finite or not `> 0`,
 /// - `transition_step_var` not finite or not `>= 0`,
 /// - `initial_distribution` is `Some(_)` but wrong length, contains non-finite or
-///   negative entries, or doesn't sum to 1 within `1e-6`.
+///   negative entries, or doesn't sum to 1 within `1e-6`,
+/// - `observation == Image { res }` but `res == 0`, `dim_latent != 2`, or
+///   `dim_obs != res * res * 3`.
 pub fn generate_train_test(cfg: &GenConfig) -> anyhow::Result<TrainTest> {
     let n_train = cfg.num_samples;
     let n_test = (cfg.num_samples / 10).max(1);
@@ -131,6 +160,20 @@ fn validate_simulator_hparams(cfg: &GenConfig) -> anyhow::Result<()> {
         "transition_step_var must be finite and >= 0 (got {})",
         cfg.transition_step_var
     );
+    if let ObservationKind::Image { res } = cfg.observation {
+        ensure!(res > 0, "observation Image.res must be > 0");
+        ensure!(
+            cfg.dim_latent == 2,
+            "observation Image requires dim_latent == 2 (got {})",
+            cfg.dim_latent
+        );
+        let expected_obs_dim = res * res * 3;
+        ensure!(
+            cfg.dim_obs == expected_obs_dim,
+            "observation Image {{ res: {res} }} requires dim_obs == {expected_obs_dim} (got {})",
+            cfg.dim_obs
+        );
+    }
     Ok(())
 }
 
@@ -169,8 +212,20 @@ fn generate_split(
     n_test: usize,
 ) -> anyhow::Result<TrainTest> {
     let pi = resolved_initial_distribution(cfg)?;
-    let (latents_train, obs_train, states_train) = roll_sequences(&mut rng, cfg, n_train, &pi);
-    let (latents_test, obs_test, states_test) = roll_sequences(&mut rng, cfg, n_test, &pi);
+    let (latents_train, obs_train_raw, states_train) = roll_sequences(&mut rng, cfg, n_train, &pi);
+    let (latents_test, obs_test_raw, states_test) = roll_sequences(&mut rng, cfg, n_test, &pi);
+
+    // For ObservationKind::Image the leaky-ReLU emission output is discarded and
+    // replaced with rendered RGB frames flattened to [N, T, res*res*3]. The model
+    // side will reshape back to [N*T, 3, res, res] inside the CNN encoder.
+    let (obs_train, obs_test) = match cfg.observation {
+        ObservationKind::Vector => (obs_train_raw, obs_test_raw),
+        ObservationKind::Image { res } => (
+            render_obs_batch(&latents_train, res),
+            render_obs_batch(&latents_test, res),
+        ),
+    };
+
     let q_true = crate::transitions::get_trans_mat(cfg.num_states);
     let pi_true = Array1::from_vec(pi);
     Ok(TrainTest {
@@ -183,6 +238,34 @@ fn generate_split(
         q_true,
         pi_true,
     })
+}
+
+/// Render every per-timestep 2-D latent in `latents` (shape `[N, T, 2]`) to a
+/// flat RGB frame, returning `[N, T, res*res*3]`. Pixel ordering matches
+/// `draw_sequence`'s `[T, res, res, 3]` (NHWC) flattened in row-major order.
+fn render_obs_batch(latents: &Array3<f32>, res: usize) -> Array3<f32> {
+    let n = latents.shape()[0];
+    let t_len = latents.shape()[1];
+    let flat_dim = res * res * 3;
+    let mut obs = Array3::<f32>::zeros((n, t_len, flat_dim));
+    for ni in 0..n {
+        let traj = latents.slice(s![ni, .., ..]);
+        let frames = crate::render::draw_sequence(traj, res);
+        // frames shape: [T, res, res, 3]. Flatten the trailing three axes per timestep.
+        for ti in 0..t_len {
+            let frame_t = frames.slice(s![ti, .., .., ..]);
+            let mut flat_idx = 0usize;
+            for row in 0..res {
+                for col in 0..res {
+                    for ch in 0..3 {
+                        obs[[ni, ti, flat_idx]] = frame_t[[row, col, ch]];
+                        flat_idx += 1;
+                    }
+                }
+            }
+        }
+    }
+    obs
 }
 
 fn rand_leaky(

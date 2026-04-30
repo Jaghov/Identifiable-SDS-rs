@@ -4,7 +4,7 @@ use safetensors::SafeTensors;
 use snlds_data::io::MANIFEST_SCHEMA_VERSION;
 use snlds_data::{
     generate_train_test, load_manifest, load_tensor_f32, load_tensor_i32, save_train_test,
-    transitions::get_trans_mat, GenConfig, Manifest, SimulatorKind, TrainTest,
+    transitions::get_trans_mat, GenConfig, Manifest, ObservationKind, SimulatorKind, TrainTest,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -374,5 +374,74 @@ fn initial_distribution_nan_entry_errors() {
     assert!(
         err.contains("finite") && err.contains("non-negative"),
         "error should mention finite + non-negative: {err}"
+    );
+}
+
+#[test]
+fn image_observation_shapes_and_pixel_range() {
+    let res = 16usize;
+    let cfg = GenConfig {
+        seed: 7,
+        num_samples: 2,
+        seq_length: 4,
+        dim_latent: 2,
+        dim_obs: res * res * 3,
+        observation: ObservationKind::Image { res },
+        ..GenConfig::default()
+    };
+    let tt = generate_train_test(&cfg).expect("image gen succeeds");
+    let n_train = cfg.num_samples;
+    let n_test = (cfg.num_samples / 10).max(1);
+    assert_eq!(
+        tt.obs_train.shape(),
+        &[n_train, cfg.seq_length, res * res * 3]
+    );
+    assert_eq!(
+        tt.obs_test.shape(),
+        &[n_test, cfg.seq_length, res * res * 3]
+    );
+    for pixel in tt.obs_train.iter().chain(tt.obs_test.iter()) {
+        assert!(
+            pixel.is_finite() && (0.0..=1.0).contains(pixel),
+            "pixel {pixel} out of [0,1] or non-finite"
+        );
+    }
+}
+
+#[test]
+fn image_observation_rejects_wrong_obs_dim() {
+    let res = 16usize;
+    let cfg = GenConfig {
+        seed: 7,
+        num_samples: 1,
+        seq_length: 2,
+        dim_latent: 2,
+        dim_obs: res * res * 3 + 1, // off by one
+        observation: ObservationKind::Image { res },
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(
+        err.contains("dim_obs") && err.contains(&format!("{}", res * res * 3)),
+        "error should reference required dim_obs: {err}"
+    );
+}
+
+#[test]
+fn image_observation_rejects_wrong_dim_latent() {
+    let res = 16usize;
+    let cfg = GenConfig {
+        seed: 7,
+        num_samples: 1,
+        seq_length: 2,
+        dim_latent: 3, // must be 2 for image rendering
+        dim_obs: res * res * 3,
+        observation: ObservationKind::Image { res },
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(
+        err.contains("dim_latent"),
+        "error should mention dim_latent: {err}"
     );
 }

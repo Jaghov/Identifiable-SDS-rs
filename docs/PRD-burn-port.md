@@ -65,7 +65,6 @@ Port the **Switching Nonlinear Dynamical System (SNLDS)** training stack from th
 ## 3. Non-goals (initial release)
 
 - Full reproduction of **every** Python experiment (e.g. all figure sweeps) unless explicitly scheduled.
-- **Image / video** encoder path (`encoder_type='video'`, `BouncingBallDataLoader`, OpenCV rendering) — **defer** to a later milestone unless promoted in scope.
 - **PolyMSM** and classical **MSM** baselines beyond **NeuralMSM** optional path.
 - **Jupyter / Matplotlib** as the **primary** exploratory stack — not required; **Rerun** is the default visualization path (see §5.4).
 - Bit-exact RNG parity with NumPy (see success criteria).
@@ -89,7 +88,6 @@ Port the **Switching Nonlinear Dynamical System (SNLDS)** training stack from th
 
 ### 4.2 Out of scope (v1)
 
-- CNN encoder/decoder and synthetic image pipelines.
 - `train_neuroscience.py` workflows.
 - Official Python binding or automatic conversion of PyTorch checkpoints (nice-to-have later).
 
@@ -220,7 +218,7 @@ Detailed **M4** checklist + testing gates: **[docs/M4.md](M4.md)**.
 
 Detailed **M5** checklist + testing gates: **[docs/M5.md](M5.md)**.
 
-Detailed **M6** (stretch) checklist + testing gates: **[docs/M6.md](M6.md)**.
+Detailed **M6** checklist + testing gates: **[docs/M6.md](M6.md)**.
 
 | Phase | Deliverable |
 |-------|-------------|
@@ -232,7 +230,7 @@ Detailed **M6** (stretch) checklist + testing gates: **[docs/M6.md](M6.md)**.
 | **M-Viz+** | **After M3:** extend Rerun with \(\gamma_{t,k}\), \(\hat{x}_t\), training scalars (ELBO, MSE, temperature). **✓ Merged** (library APIs in `snlds-viz`; training `--viz` optional). *[Tracker: [M-Viz+.md](M-Viz+.md)]* |
 | **M4** | Factored training CLI (**`snlds-train`**), Adam, gradient clipping, **`CompactRecorder`** checkpoints. **✓ Merged** (StepLR / `--viz` deferred — see tracker). *[Tracker: [M4.md](M4.md)]* |
 | **M5** | Optional NeuralMSM + warm-start (`snlds-msm` + `snlds-train --msm-init`). **✓ Merged** (simplifications documented). *[Tracker: [M5.md](M5.md)]* |
-| **M6** (stretch) | Image encoder/decoder path. **Deferred** — out of scope for v1. *[Tracker: [M6.md](M6.md)]* |
+| **M6** | CNN encoder/decoder path (`EncoderKind { Mlp, Cnn { res } }` on `SnldsConfig`; `ObservationKind::Image { res }` on `GenConfig`). **✓ Merged** — promoted from stretch as the data-flow template for the planned `FlowSNLDS` encoder. *[Tracker: [M6.md](M6.md)]* |
 
 ---
 
@@ -252,7 +250,6 @@ Detailed **M6** (stretch) checklist + testing gates: **[docs/M6.md](M6.md)**.
 | Bi-LSTM + stack differences vs PyTorch | Implement `factored` first; add integration test; consider GRU if LSTM parity is costly. |
 | Full-cov Gaussian numerics | Unit tests vs PyTorch; Cholesky + symmetrize cov. |
 | Long compile times / Burn API churn | Pin Burn version in §8.5 and changelog; periodic upgrade task. |
-| Scope creep (images) | Explicit non-goal until M5+ stable. |
 | Rerun log volume / perf | Log every-`k` scalars on a stride; optional `--viz-epoch` only. |
 
 ---
@@ -272,7 +269,7 @@ _When resolved, move outcomes here or to §8.5 and note in changelog._
 ## 13. Appendix: Reference files (Python)
 
 - `identifiable-SDS/models/VariationalSNLDS.py`
-- `identifiable-SDS/models/modules.py` (MLP, CNNs deferred)
+- `identifiable-SDS/models/modules.py` (MLP, `CNNFastEncoder`, `CNNFastDecoder`)
 - `identifiable-SDS/generate_data_and_train_snlds.py`
 - `identifiable-SDS/utils/transitions.py`
 - `identifiable-SDS/models/NeuralMSM.py` (optional)
@@ -284,6 +281,7 @@ _When resolved, move outcomes here or to §8.5 and note in changelog._
 
 | Version | Date       | Notes |
 |---------|------------|-------|
+| 1.19    | 2026-04-30 | **M6** merged: CNN encoder/decoder via `EncoderKind { Mlp, Cnn { res } }` + `ObservationKind::Image { res }`; §3 / §4.2 image carve-out lifted; §9 row flipped to merged; §13 reference list updated. |
 | 1.18    | 2026-04-29 | **M1 schema v4**: simulator hparams on `GenConfig` + `Manifest`; configurable `initial_distribution`; `EMISSION_HIDDEN_DIM` demoted to default; v3 manifests still load. |
 | 1.15    | 2026-04-29 | **M5** merged (`snlds-msm`, `--msm-init`); **M6** explicitly deferred; §8.2 / §8.5 deps add **`linfa`** / **`linfa-reduction`**. |
 | 1.14    | 2026-04-29 | **M-Viz+** + **M4** merged; §9 table + §12 checkpoint partial resolve; changelog 1.14. |

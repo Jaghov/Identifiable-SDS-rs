@@ -6,6 +6,7 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use snlds_model::EncoderKind;
 use std::path::Path;
 
 /// Default observation noise variance used in the reconstruction term of the ELBO.
@@ -18,8 +19,10 @@ pub const DEFAULT_OBS_NOISE_VAR: f32 = 5e-4;
 /// Filename written to `output_dir` so checkpoints carry their training context.
 pub const TRAIN_SNAPSHOT_FILENAME: &str = "train_config.json";
 
-/// Bump when the snapshot schema gains/loses fields.
-pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Bump when the snapshot schema gains/loses fields. `2` adds `kind` for the
+/// M6 encoder/decoder selector. v1 snapshots are intentionally not loadable —
+/// no production checkpoints exist yet.
+pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Subset of [`crate::TrainConfig`] that downstream tools need to recover.
 ///
@@ -32,6 +35,8 @@ pub struct TrainSnapshot {
     pub beta: f32,
     pub temperature: f32,
     pub obs_noise_var: f32,
+    /// Encoder/decoder family the run used. Required (no implicit default).
+    pub kind: EncoderKind,
 }
 
 impl TrainSnapshot {
@@ -59,5 +64,25 @@ impl TrainSnapshot {
             anyhow::anyhow!("checkpoint path {checkpoint_path:?} has no parent directory")
         })?;
         Self::load_from_dir(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_with_cnn_kind() {
+        let original = TrainSnapshot {
+            schema_version: TRAIN_SNAPSHOT_SCHEMA_VERSION,
+            hidden_dim: 32,
+            beta: 1.0,
+            temperature: 1.0,
+            obs_noise_var: 5e-4,
+            kind: EncoderKind::Cnn { res: 16 },
+        };
+        let bytes = serde_json::to_vec(&original).expect("serialize");
+        let parsed: TrainSnapshot = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(original, parsed);
     }
 }

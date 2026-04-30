@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod model_tests {
-    use crate::model::SnldsConfig;
+    use crate::model::{EncoderKind, SnldsConfig};
     use burn::backend::cpu::CpuDevice;
     use burn::backend::{Autodiff, Cpu};
     use burn::tensor::Tensor;
@@ -165,9 +165,15 @@ mod model_tests {
         let loss = output.elbo.neg().sum();
         let gradients = loss.backward();
 
-        // Check that gradients exist and are finite for the decoder's first linear weight
-        let decoder_first_weight_grad = model
-            .decoder
+        // Check that gradients exist and are finite for the decoder's first linear weight.
+        // Default config uses EncoderKind::Mlp, so the decoder is the MLP variant.
+        let decoder_mlp = match &model.decoder {
+            crate::model::SnldsDecoder::Mlp(mlp) => mlp,
+            crate::model::SnldsDecoder::Cnn(_) => {
+                panic!("small_config uses EncoderKind::Mlp; CNN decoder unexpected")
+            }
+        };
+        let decoder_first_weight_grad = decoder_mlp
             .first_linear
             .weight
             .grad(&gradients)
@@ -181,5 +187,45 @@ mod model_tests {
             grad_data.iter().all(|value| value.is_finite()),
             "decoder gradients contain non-finite values"
         );
+    }
+
+    /// End-to-end forward through `VariationalSnlds` with `EncoderKind::Cnn`.
+    /// Asserts that image-shaped observations round-trip to themselves and
+    /// that the ELBO is finite. Kept minimal (`res=16, hidden=4, T=2`) because
+    /// the CPU backend's conv kernels are slow.
+    #[test]
+    fn forward_cnn_shapes_and_elbo_finite() {
+        let device = cpu_device();
+        let res = 16usize;
+        let obs_dim = 3 * res * res;
+        let latent_dim = 2usize;
+        let hidden_dim = 4usize;
+        let num_states = 3usize;
+
+        let config = SnldsConfig::new(obs_dim, latent_dim, hidden_dim, num_states)
+            .with_kind(EncoderKind::Cnn { res });
+        let model = config.init::<CpuBackend>(&device);
+
+        let batch_size = 2;
+        let seq_len = 2;
+        let obs = Tensor::<CpuBackend, 3>::random(
+            [batch_size, seq_len, obs_dim],
+            burn::tensor::Distribution::Uniform(0.0, 1.0),
+            &device,
+        );
+
+        let output = model.forward(obs, 1.0, 5e-4, 1.0);
+
+        assert_eq!(
+            output.obs_reconstructed.dims(),
+            [batch_size, seq_len, obs_dim]
+        );
+        assert_eq!(
+            output.latent_samples.dims(),
+            [batch_size, seq_len, latent_dim]
+        );
+
+        let elbo_val = output.elbo.into_data().to_vec::<f32>().unwrap()[0];
+        assert!(elbo_val.is_finite(), "CNN ELBO not finite: {elbo_val}");
     }
 }
