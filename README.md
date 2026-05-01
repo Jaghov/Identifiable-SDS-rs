@@ -50,9 +50,9 @@ use snlds_core::hmm; // forward / backward / posterior kernels
 type B = Autodiff<Cpu<f32>>;
 ```
 
-### `snlds-data` (M1) — synthetic generation + SafeTensors IO
+### `snlds-data` — synthetic generation + SafeTensors IO
 
-Generates cosine / polynomial SDS-style sequences and writes `sequences.safetensors` + `metadata.json` (see [docs/M1.md](docs/M1.md)). Latents and observations are **F32**; discrete states are **I32**.
+Generates cosine / polynomial SDS-style sequences and writes `sequences.safetensors` + `metadata.json. Latents and observations are **F32**; discrete states are **I32**.
 
 CLI (`snlds-gen`):
 
@@ -88,7 +88,7 @@ let manifest = load_manifest("./out/run1/metadata.json")?;
 
 For a custom topology pass `TransitionPattern::Provided(matrix)`; `get_trans_mat` validates row-stochasticity once per generation and threads the same `Q` into both `roll_sequences` and `q_true`.
 
-### `snlds-viz` (M-Viz) — ground-truth visualisation
+### `snlds-viz` — ground-truth visualisation
 
 Logs ground-truth sequences, the true `Q`, and Figure-6-style state strips into Rerun.
 
@@ -112,7 +112,7 @@ log_transition_matrix(&rec, "snlds/markov/q_true", &tt.q_true.view());
 log_state_strip(&rec, "snlds/state/strip_true", tt.states_train.row(0));
 ```
 
-### `snlds-model` (M3) — `VariationalSnlds` + encoders/decoders
+### `snlds-model` — `VariationalSnlds` + encoders/decoders
 
 Library only. Provides `VariationalSnlds`, the MLP/CNN encoders, and `SnldsConfig`.
 
@@ -127,9 +127,9 @@ let model: VariationalSnlds<B> = cfg.init(&Default::default());
 let out = model.forward(obs_tensor, /* beta */ 1.0, /* obs_noise_var */ 5e-4, /* temperature */ 1.0);
 ```
 
-### `snlds-train` (M4) — training CLI + library
+### `snlds-train` — training CLI + library
 
-Loads M1 splits, trains on the autodiff `ndarray` backend, writes `CompactRecorder` checkpoints + `train_config.json`.
+Loads data splits, trains on the autodiff `ndarray` backend, writes `CompactRecorder` checkpoints + `train_config.json`.
 
 CLI (`snlds-train`):
 
@@ -154,7 +154,7 @@ train::<MyBackend>(&cfg, obs, &device)?;
 
 Optional NeuralMSM warm start is exposed via `--msm-init` (CLI) or `snlds_train::run_warm_start` (library); see `MsmWarmStartConfig`.
 
-### `snlds-msm` (M5) — NeuralMSM warm-start
+### `snlds-msm` — NeuralMSM warm-start
 
 Library: linfa-reduction PCA → simplified `NeuralMsm` → parameter transfer into a `VariationalSnlds`.
 
@@ -170,7 +170,7 @@ let snlds = transfer_into_snlds(msm, snlds_model)?;
 
 `snlds-train --msm-init` wires this into the training loop end-to-end.
 
-### `snlds-eval` (M-Viz+) — inference + Rerun logging
+### `snlds-eval` — inference + Rerun logging
 
 Loads a `snlds-train` checkpoint, runs forward inference on `obs_train`, and logs the inferred `Q`, posteriors `γ`, state strips, and reconstructions to Rerun. Reads `train_config.json` next to the checkpoint automatically; CLI flags override.
 
