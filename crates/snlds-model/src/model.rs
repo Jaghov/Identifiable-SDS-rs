@@ -1,3 +1,4 @@
+use crate::cnn::{validate_cnn_res, CnnDecoder, CnnDecoderConfig, CnnEncoder, CnnEncoderConfig};
 use crate::mlp::{Mlp, MlpConfig};
 use burn::{
     config::Config,
@@ -8,6 +9,39 @@ use snlds_core::hmm::{log_backward, log_forward};
 use std::f32::consts::PI;
 
 const COV_EPS: f32 = 1e-6;
+
+/// Encoder/decoder family selector for [`SnldsConfig`].
+///
+/// `Mlp` is the Python-`factored` parity path: a 2-hidden-layer leaky-ReLU MLP
+/// pair operating on flat observations. `Cnn { res }` swaps in
+/// [`CnnEncoder`]/[`CnnDecoder`] for `res × res × 3` image observations
+/// (Python `CNNFastEncoder` / `CNNFastDecoder`); `obs_dim` must equal
+/// `3 * res * res` and `res` must be a power of two `≥ 16`.
+///
+/// The enum is shaped so a future `Flow` variant for the planned `FlowSNLDS`
+/// encoder can be added with no churn to `forward()` — every variant ultimately
+/// produces the same `[N*T, 2*latent_dim]` / `[N*T, obs_dim]` interface via
+/// [`SnldsEncoder`] / [`SnldsDecoder`].
+#[derive(Config, Debug, PartialEq)]
+pub enum EncoderKind {
+    /// Two-hidden-layer leaky-ReLU MLP pair (Python `factored` parity).
+    Mlp,
+    /// CNN encoder/decoder pair for flat RGB image observations.
+    Cnn {
+        /// Input frame side length; `obs_dim` MUST equal `3 * res * res`.
+        res: usize,
+    },
+}
+
+// `#[derive(Default)]` would be cleaner but doesn't compose with Burn's
+// `#[derive(Config)]` macro on enums (the `#[default]` variant attribute is
+// rejected as unknown). Hand-rolling keeps `EncoderKind::Mlp` as the default.
+#[allow(clippy::derivable_impls)]
+impl Default for EncoderKind {
+    fn default() -> Self {
+        EncoderKind::Mlp
+    }
+}
 
 /// Layout configuration for [`VariationalSnlds`].
 ///
@@ -33,10 +67,21 @@ pub struct SnldsConfig {
     pub hidden_dim: usize,
     /// Number of discrete states K.
     pub num_states: usize,
+    /// Encoder/decoder family. Default `Mlp` keeps every existing call site
+    /// behaviour-identical; switch to `Cnn { res }` for image observations.
+    #[config(default = "EncoderKind::Mlp")]
+    pub kind: EncoderKind,
 }
 
 impl SnldsConfig {
     /// Initialise a new [`VariationalSnlds`] with random weights on `device`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kind == EncoderKind::Cnn { res }` and either `res` is not a
+    /// power of two `≥ 16` or `obs_dim != 3 * res * res`. Both are call-site
+    /// configuration errors; eval/train CLIs surface them as user-facing errors
+    /// before reaching this point.
     pub fn init<B: Backend>(&self, device: &B::Device) -> VariationalSnlds<B> {
         let transition_nets = (0..self.num_states)
             .map(|_| {
@@ -44,11 +89,44 @@ impl SnldsConfig {
             })
             .collect();
 
-        let encoder =
-            MlpConfig::leaky_relu(self.obs_dim, 2 * self.latent_dim, self.hidden_dim).init(device);
-
-        let decoder =
-            MlpConfig::leaky_relu(self.latent_dim, self.obs_dim, self.hidden_dim).init(device);
+        let (encoder, decoder) = match self.kind {
+            EncoderKind::Mlp => {
+                let encoder = SnldsEncoder::Mlp(
+                    MlpConfig::leaky_relu(self.obs_dim, 2 * self.latent_dim, self.hidden_dim)
+                        .init(device),
+                );
+                let decoder = SnldsDecoder::Mlp(
+                    MlpConfig::leaky_relu(self.latent_dim, self.obs_dim, self.hidden_dim)
+                        .init(device),
+                );
+                (encoder, decoder)
+            }
+            EncoderKind::Cnn { res } => {
+                validate_cnn_res(res).expect("EncoderKind::Cnn { res } must be power-of-2 >= 16");
+                assert_eq!(
+                    self.obs_dim,
+                    3 * res * res,
+                    "EncoderKind::Cnn {{ res: {res} }} requires obs_dim == 3*res*res"
+                );
+                let encoder = SnldsEncoder::Cnn(
+                    CnnEncoderConfig {
+                        res,
+                        output_dim: 2 * self.latent_dim,
+                        hidden_dim: self.hidden_dim,
+                    }
+                    .init(device),
+                );
+                let decoder = SnldsDecoder::Cnn(
+                    CnnDecoderConfig {
+                        res,
+                        input_dim: self.latent_dim,
+                        hidden_dim: self.hidden_dim,
+                    }
+                    .init(device),
+                );
+                (encoder, decoder)
+            }
+        };
 
         let q_logits =
             Param::from_tensor(Tensor::zeros([self.num_states, self.num_states], device));
@@ -83,18 +161,68 @@ impl SnldsConfig {
     }
 }
 
-/// Variational SNLDS model — `factored` (MLP) encoder variant.
+/// Encoder wrapper that dispatches between the MLP and CNN variants. Both
+/// variants take `[N*T, obs_dim]` and emit `[N*T, 2*latent_dim]`.
 ///
-/// Matches `VariationalSNLDS` from Python with `encoder_type='factored'` and `inference='alpha'`.
+/// Variants differ in size (the CNN holds `Vec<Conv2d>` plus a projection MLP);
+/// each `VariationalSnlds` carries exactly one encoder, so the unused-bytes
+/// cost flagged by the lint is irrelevant in practice.
+#[allow(clippy::large_enum_variant)]
+#[derive(Module, Debug)]
+pub enum SnldsEncoder<B: Backend> {
+    /// Two-hidden-layer leaky-ReLU MLP (Python `factored` parity).
+    Mlp(Mlp<B>),
+    /// CNN encoder for flat RGB image observations (Python `CNNFastEncoder`).
+    Cnn(CnnEncoder<B>),
+}
+
+impl<B: Backend> SnldsEncoder<B> {
+    /// Forward: `[N*T, obs_dim] → [N*T, 2*latent_dim]`.
+    pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        match self {
+            SnldsEncoder::Mlp(mlp) => mlp.forward(input),
+            SnldsEncoder::Cnn(cnn) => cnn.forward(input),
+        }
+    }
+}
+
+/// Decoder wrapper that dispatches between the MLP and CNN variants. Both
+/// variants take `[N*T, latent_dim]` and emit `[N*T, obs_dim]`.
+///
+/// See [`SnldsEncoder`] for why `clippy::large_enum_variant` is silenced.
+#[allow(clippy::large_enum_variant)]
+#[derive(Module, Debug)]
+pub enum SnldsDecoder<B: Backend> {
+    /// Two-hidden-layer leaky-ReLU MLP (Python `factored` parity).
+    Mlp(Mlp<B>),
+    /// CNN decoder for flat RGB image observations (Python `CNNFastDecoder`).
+    Cnn(CnnDecoder<B>),
+}
+
+impl<B: Backend> SnldsDecoder<B> {
+    /// Forward: `[N*T, latent_dim] → [N*T, obs_dim]`.
+    pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        match self {
+            SnldsDecoder::Mlp(mlp) => mlp.forward(input),
+            SnldsDecoder::Cnn(cnn) => cnn.forward(input),
+        }
+    }
+}
+
+/// Variational SNLDS model.
+///
+/// Matches `VariationalSNLDS` from Python with `encoder_type='factored'` and
+/// `inference='alpha'` for [`SnldsEncoder::Mlp`], or `encoder_type='video'`
+/// with the CNN bypass (no temporal LSTM) for [`SnldsEncoder::Cnn`].
 /// Temperature annealing is not included (M4+).
 #[derive(Module, Debug)]
 pub struct VariationalSnlds<B: Backend> {
     /// K transition MLPs: p(z_t | z_{t-1}, s_t), one per discrete state.
     pub transition_nets: Vec<Mlp<B>>,
-    /// Factored encoder q(z | x): obs_dim → 2 * latent_dim (mean ‖ log-variance).
-    pub encoder: Mlp<B>,
+    /// Encoder q(z | x): obs_dim → 2 * latent_dim (mean ‖ log-variance).
+    pub encoder: SnldsEncoder<B>,
     /// Decoder p(x | z): latent_dim → obs_dim.
-    pub decoder: Mlp<B>,
+    pub decoder: SnldsDecoder<B>,
     /// Transition logits Q, shape [K, K]; log p(s_t | s_{t-1}) = log_softmax(Q / temp, dim=-1).
     pub q_logits: Param<Tensor<B, 2>>,
     /// Initial state logits π, shape [K]; log p(s_1) = log_softmax(π / temp).

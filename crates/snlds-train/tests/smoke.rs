@@ -71,6 +71,7 @@ fn train_one_step_no_panic() {
         obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
+        kind: snlds_model::EncoderKind::Mlp,
     };
 
     let history = train::<TrainBackend>(&config, obs_tensor, &device).expect("train");
@@ -106,6 +107,7 @@ fn snapshot_persisted_next_to_checkpoint() {
         obs_noise_var: 7e-4,
         seed: 0,
         resume_from: None,
+        kind: snlds_model::EncoderKind::Mlp,
     };
     train::<TrainBackend>(&config, obs_tensor, &device).expect("train");
 
@@ -150,6 +152,7 @@ fn checkpoint_round_trip() {
         obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
+        kind: snlds_model::EncoderKind::Mlp,
     };
     train::<TrainBackend>(&config, obs_tensor, &device).expect("train");
 
@@ -165,6 +168,7 @@ fn checkpoint_round_trip() {
     let resume_config = TrainConfig {
         epochs: 1,
         resume_from: Some(checkpoint_path),
+        kind: snlds_model::EncoderKind::Mlp,
         ..config
     };
     train::<TrainBackend>(&resume_config, obs_tensor_resume, &device).expect("resume train");
@@ -195,6 +199,7 @@ fn warm_start_then_train_no_panic() {
         obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
+        kind: snlds_model::EncoderKind::Mlp,
     };
     let snlds_config = build_model_config(&config, &obs_tensor.manifest);
 

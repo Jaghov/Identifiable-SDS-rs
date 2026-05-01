@@ -70,6 +70,7 @@ fn eval_after_one_epoch_writes_rrd() {
         obs_noise_var: 5e-4,
         seed: 0,
         resume_from: None,
+        kind: snlds_model::EncoderKind::Mlp,
     };
     train::<TrainBackend>(&train_config, obs_tensor, &device).expect("train");
 

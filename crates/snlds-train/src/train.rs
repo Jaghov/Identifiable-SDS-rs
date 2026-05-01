@@ -12,7 +12,7 @@ use burn::tensor::Tensor;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
-use snlds_model::{SnldsConfig, VariationalSnlds};
+use snlds_model::{EncoderKind, SnldsConfig, VariationalSnlds};
 use std::path::{Path, PathBuf};
 
 /// Hyper-parameters and IO paths for one training run.
@@ -34,6 +34,10 @@ pub struct TrainConfig {
     pub obs_noise_var: f32,
     pub seed: u64,
     pub resume_from: Option<PathBuf>,
+    /// Encoder/decoder family forwarded to `SnldsConfig::kind`. Default is
+    /// `EncoderKind::Mlp` (Python-`factored` parity); set to
+    /// `EncoderKind::Cnn { res }` to train on flat-RGB image observations.
+    pub kind: EncoderKind,
 }
 
 impl Default for TrainConfig {
@@ -52,6 +56,7 @@ impl Default for TrainConfig {
             obs_noise_var: DEFAULT_OBS_NOISE_VAR,
             seed: 0,
             resume_from: None,
+            kind: EncoderKind::default(),
         }
     }
 }
@@ -65,6 +70,10 @@ pub struct EpochStats {
 }
 
 /// Build a fresh `VariationalSnlds` from `manifest` + `config.hidden_dim`.
+///
+/// Forwards `config.kind` to [`SnldsConfig::kind`]; for
+/// [`EncoderKind::Cnn { res }`] callers must ensure `manifest.dim_obs ==
+/// 3 * res * res`. The model `init` panics with a descriptive message if not.
 pub fn build_model_config(config: &TrainConfig, manifest: &snlds_data::Manifest) -> SnldsConfig {
     SnldsConfig::new(
         manifest.dim_obs,
@@ -72,6 +81,7 @@ pub fn build_model_config(config: &TrainConfig, manifest: &snlds_data::Manifest)
         config.hidden_dim,
         manifest.num_states,
     )
+    .with_kind(config.kind.clone())
 }
 
 /// Run the training loop with a freshly initialised model. See
@@ -120,6 +130,7 @@ pub fn train_with_model<B: AutodiffBackend>(
         beta: config.beta,
         temperature: config.temperature,
         obs_noise_var: config.obs_noise_var,
+        kind: config.kind.clone(),
     };
     snapshot
         .save(&config.output_dir)

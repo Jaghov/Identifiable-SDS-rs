@@ -6,6 +6,7 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use snlds_model::EncoderKind;
 use std::path::Path;
 
 /// Default observation noise variance used in the reconstruction term of the ELBO.
@@ -18,8 +19,10 @@ pub const DEFAULT_OBS_NOISE_VAR: f32 = 5e-4;
 /// Filename written to `output_dir` so checkpoints carry their training context.
 pub const TRAIN_SNAPSHOT_FILENAME: &str = "train_config.json";
 
-/// Bump when the snapshot schema gains/loses fields.
-pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+/// Bump when the snapshot schema gains/loses fields. `2` adds `kind` for the
+/// M6 encoder/decoder selector. v1 snapshots are intentionally not loadable —
+/// no production checkpoints exist yet.
+pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Subset of [`crate::TrainConfig`] that downstream tools need to recover.
 ///
@@ -32,6 +35,8 @@ pub struct TrainSnapshot {
     pub beta: f32,
     pub temperature: f32,
     pub obs_noise_var: f32,
+    /// Encoder/decoder family the run used. Required (no implicit default).
+    pub kind: EncoderKind,
 }
 
 impl TrainSnapshot {
@@ -50,6 +55,12 @@ impl TrainSnapshot {
         let bytes = std::fs::read(&path).with_context(|| format!("read snapshot {path:?}"))?;
         let snapshot: Self =
             serde_json::from_slice(&bytes).with_context(|| format!("parse snapshot {path:?}"))?;
+        if snapshot.schema_version != TRAIN_SNAPSHOT_SCHEMA_VERSION {
+            anyhow::bail!(
+                "snapshot {path:?} has schema_version {} but loader expects {TRAIN_SNAPSHOT_SCHEMA_VERSION}",
+                snapshot.schema_version
+            );
+        }
         Ok(snapshot)
     }
 
@@ -59,5 +70,46 @@ impl TrainSnapshot {
             anyhow::anyhow!("checkpoint path {checkpoint_path:?} has no parent directory")
         })?;
         Self::load_from_dir(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_with_cnn_kind() {
+        let original = TrainSnapshot {
+            schema_version: TRAIN_SNAPSHOT_SCHEMA_VERSION,
+            hidden_dim: 32,
+            beta: 1.0,
+            temperature: 1.0,
+            obs_noise_var: 5e-4,
+            kind: EncoderKind::Cnn { res: 16 },
+        };
+        let bytes = serde_json::to_vec(&original).expect("serialize");
+        let parsed: TrainSnapshot = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn load_rejects_mismatched_schema_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(TRAIN_SNAPSHOT_FILENAME);
+        // Hand-crafted v1 snapshot (no `kind`, schema_version: 1).
+        // Mismatched-version fixture: all required v2 fields present so serde
+        // succeeds; schema_version is non-2 so the loader's version check is
+        // what should reject it.
+        std::fs::write(
+            &path,
+            br#"{"schema_version":99,"hidden_dim":32,"beta":1.0,"temperature":1.0,"obs_noise_var":5e-4,"kind":"Mlp"}"#,
+        )
+        .expect("write fixture");
+        let err = TrainSnapshot::load_from_dir(tmp.path()).expect_err("expected load failure");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("schema_version"),
+            "error should mention schema_version, got: {msg}"
+        );
     }
 }

@@ -20,7 +20,7 @@ use burn::tensor::activation::softmax;
 use burn::tensor::{backend::Backend, Tensor};
 use ndarray::{Array2, Array3, Axis};
 use snlds_data::Manifest;
-use snlds_model::{SnldsConfig, VariationalSnlds};
+use snlds_model::{EncoderKind, SnldsConfig, VariationalSnlds};
 use snlds_train::data::load_train_obs;
 use snlds_train::TrainSnapshot;
 use std::path::PathBuf;
@@ -34,6 +34,10 @@ pub struct ResolvedHparams {
     pub temperature: f32,
     pub obs_noise_var: f32,
     pub beta: f32,
+    /// Encoder/decoder family the model was trained with. Loaded from the
+    /// snapshot so eval rebuilds the same `SnldsConfig` (and thus the same
+    /// parameter layout the checkpoint expects).
+    pub kind: EncoderKind,
 }
 
 /// Configuration for one evaluation run.
@@ -82,6 +86,7 @@ pub fn resolve_hparams(config: &EvalConfig) -> anyhow::Result<ResolvedHparams> {
             .obs_noise_var_override
             .unwrap_or(snapshot.obs_noise_var),
         beta: config.beta_override.unwrap_or(snapshot.beta),
+        kind: snapshot.kind,
     };
     anyhow::ensure!(
         hparams.beta > 0.0,
@@ -91,12 +96,28 @@ pub fn resolve_hparams(config: &EvalConfig) -> anyhow::Result<ResolvedHparams> {
     Ok(hparams)
 }
 
+/// Surface a CNN/manifest mismatch as a user-facing error before the eventual
+/// panic inside `SnldsConfig::init`. `manifest.dim_obs` must equal `3 * res * res`
+/// when the snapshot says the run trained with `EncoderKind::Cnn { res }`.
+fn ensure_kind_matches_manifest(kind: &EncoderKind, manifest: &Manifest) -> anyhow::Result<()> {
+    if let EncoderKind::Cnn { res } = kind {
+        let expected = 3 * res * res;
+        anyhow::ensure!(
+            manifest.dim_obs == expected,
+            "data dim_obs {} does not match snapshot EncoderKind::Cnn {{ res: {res} }} (expected {expected})",
+            manifest.dim_obs,
+        );
+    }
+    Ok(())
+}
+
 /// Run inference + Rerun logging end-to-end.
 pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::Result<()> {
     let hparams = resolve_hparams(config)?;
     let obs_tensor = load_train_obs::<B>(&config.data_dir, device)
         .with_context(|| format!("load obs_train from {:?}", config.data_dir))?;
     let manifest = obs_tensor.manifest.clone();
+    ensure_kind_matches_manifest(&hparams.kind, &manifest)?;
     let model = load_checkpoint::<B>(config, &hparams, &manifest, device)?;
 
     let num_seqs = config.sequences.min(manifest.num_samples);
@@ -189,7 +210,8 @@ fn load_checkpoint<B: Backend>(
         manifest.dim_latent,
         hparams.hidden_dim,
         manifest.num_states,
-    );
+    )
+    .with_kind(hparams.kind.clone());
     let model: VariationalSnlds<B> = snlds_config.init(device);
     let recorder = CompactRecorder::new();
     let record = recorder
