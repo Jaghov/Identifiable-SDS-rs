@@ -26,7 +26,7 @@ Eliminate "same number, two places" patterns where a numeric constant lives on b
 
 ## Execution
 
-Three sequential PRs, each landed via the standard worktree → bad-mood reviewer → commit + merge pipeline. Reviewer must approve **with all concerns (including nitpicks) addressed** before merge. PR 4 (Markov topology pluggability) is deferred.
+Three sequential PRs (PR 1–3), each landed via the standard worktree → bad-mood reviewer → commit + merge pipeline. Reviewer must approve **with all concerns (including nitpicks) addressed** before merge. **PR 4** (Markov topology pluggability) landed separately — see § PR 4 below.
 
 ### PR 1 — `fix/snlds-config-obs-noise-dedupe` (issue #1)
 
@@ -139,9 +139,11 @@ Make `EMISSION_HIDDEN_DIM` the **default constructor value**, not the only allow
 
 ---
 
-### PR 4 — `feat/markov-topology-pluggable` (issue #5) — **deferred**
+### PR 4 — `feat/markov-topology-pluggable` (issue #5) — **merged**
 
-Today's `0.9/0.1` cyclic chain is faithfully captured by `q_true` (PR 3 doesn't make this worse), so consumers can already see exactly what was used. The smell is purely simulator-side rigidity. Add a `TransitionPattern { Cyclic { self_prob: f32 }, Provided(Array2<f32>) }` enum on `GenConfig` only when a real experiment needs a non-cyclic chain.
+**Approach:** Replace the implicit fixed cyclic builder with `TransitionPattern { Cyclic { self_prob }, Provided(Array2<f32>) }` on `GenConfig`. `get_trans_mat(pattern, num_states)` validates shape and row-stochasticity; `generate_split` calls it once and passes the same `Array2<f32>` into `roll_sequences` and `TrainTest.q_true`. Cyclic `K=1` yields `[[1.0]]` (identity row-stochastic matrix).
+
+**Files:** `crates/snlds-data/src/transitions.rs`, `generate.rs`, `lib.rs`; integration tests; [docs/PRD-burn-port.md](PRD-burn-port.md) changelog.
 
 ---
 
@@ -164,9 +166,9 @@ That single addition would have caught the `obs_noise_var = 0.1` bug on the orig
 | 1 | PR 1 (`obs_noise_var` dedupe) | 30 min | None |
 | 2 | PR 2 (unwrap audit) | 1 hr | None |
 | 3 | PR 3 (schema v4) | 3–4 hrs | Touches `snlds-data`; coordinate with any in-flight data work |
-| — | PR 4 (topology) | deferred | — |
+| 4 | PR 4 (`feat/markov-topology-pluggable`) | landed | After PR 3 |
 
-**Total active work:** ~5 hrs across 3 PRs.
+**Total active work (PR 1–3):** ~5 hrs across three PRs; PR 4 tracked separately.
 
 ---
 
@@ -174,4 +176,5 @@ That single addition would have caught the `obs_noise_var = 0.1` bug on the orig
 
 | Date | Note |
 |------|------|
+| 2026-04-29 | PR 4 (Markov topology / `TransitionPattern`) merged; cyclic Q no longer fixed-only in code paths — configured via `GenConfig.transition`. |
 | 2026-04-29 | Initial plan; triggered by post-merge audit of `feat/m-viz-graphs`. |

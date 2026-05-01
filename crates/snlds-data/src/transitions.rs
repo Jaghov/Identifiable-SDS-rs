@@ -2,24 +2,96 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::polynomial::{expand_polynomial_row, sklearn_powers};
+use anyhow::ensure;
 use ndarray::{Array1, Array2, Array3, ArrayView1, ArrayView2};
 use rand::Rng;
 
 /// Hidden width for leaky-ReLU emission (`params_leaky`) and cosine feature maps (matches Python `generate_data`).
 pub const EMISSION_HIDDEN_DIM: usize = 8;
 
-/// Cyclic Markov transition with 0.9 self and 0.1 to the next state.
-pub fn get_trans_mat(size: usize) -> Array2<f32> {
-    let mut q = Array2::<f32>::zeros((size, size));
-    for i in 0..size.saturating_sub(1) {
-        q[[i, i]] = 0.9;
-        q[[i, i + 1]] = 0.1;
+/// Default self-transition probability for [`TransitionPattern::Cyclic`] (historical 0.9 / 0.1 chain).
+pub(crate) const DEFAULT_CYCLIC_SELF_PROB: f32 = 0.9;
+
+/// Row-sum tolerance for [`TransitionPattern::Provided`] validation.
+const TRANSITION_ROW_SUM_TOL: f32 = 1e-6;
+
+/// Markov transition topology for the synthetic simulator.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransitionPattern {
+    /// Cyclic chain: diagonal `self_prob`, forward edge (with wrap) `1 - self_prob`.
+    /// `self_prob` must be finite and in `[0, 1]`.
+    Cyclic {
+        /// Diagonal entry when `size >= 2`. For `size == 1`, [`get_trans_mat`] returns `[[1.0]]`
+        /// regardless of this field (the only row-stochastic `1×1` matrix).
+        self_prob: f32,
+    },
+    /// Caller-supplied row-stochastic matrix: shape `[size, size]`, finite non-negative entries,
+    /// rows summing to 1 within `1e-6` (per-entry upper bounds follow from row-stochasticity).
+    Provided(Array2<f32>),
+}
+
+impl Default for TransitionPattern {
+    fn default() -> Self {
+        Self::Cyclic {
+            self_prob: DEFAULT_CYCLIC_SELF_PROB,
+        }
     }
-    if size > 0 {
-        q[[size - 1, size - 1]] = 0.9;
-        q[[size - 1, 0]] = 0.1;
+}
+
+/// Build the Markov transition matrix for `pattern` at dimension `size` (`num_states`).
+///
+/// `size` must be positive. For cyclic topology with `size == 1`, returns `[[1.0]]`.
+pub fn get_trans_mat(pattern: &TransitionPattern, size: usize) -> anyhow::Result<Array2<f32>> {
+    ensure!(
+        size > 0,
+        "transition matrix size must be > 0 (num_states) (got {size})"
+    );
+    match pattern {
+        TransitionPattern::Cyclic { self_prob } => {
+            ensure!(
+                self_prob.is_finite() && (0.0..=1.0).contains(self_prob),
+                "TransitionPattern::Cyclic.self_prob must be finite and in [0, 1] (got {self_prob})"
+            );
+            if size == 1 {
+                let mut trans_mat = Array2::<f32>::zeros((1, 1));
+                trans_mat[[0, 0]] = 1.0;
+                return Ok(trans_mat);
+            }
+            let mut trans_mat = Array2::<f32>::zeros((size, size));
+            let next_prob = 1.0 - self_prob;
+            for row_idx in 0..size {
+                let next_idx = (row_idx + 1) % size;
+                trans_mat[[row_idx, row_idx]] = *self_prob;
+                if next_idx != row_idx {
+                    trans_mat[[row_idx, next_idx]] = next_prob;
+                }
+            }
+            Ok(trans_mat)
+        }
+        TransitionPattern::Provided(matrix) => {
+            ensure!(
+                matrix.shape() == [size, size],
+                "TransitionPattern::Provided expected shape [{size}, {size}], got {:?}",
+                matrix.shape()
+            );
+            for ((row_idx, col_idx), entry) in matrix.indexed_iter() {
+                ensure!(
+                    entry.is_finite() && *entry >= 0.0,
+                    "TransitionPattern::Provided entry at ({row_idx}, {col_idx}) must be finite and non-negative (got {entry})"
+                );
+            }
+            for (row_idx, row) in matrix.rows().into_iter().enumerate() {
+                let row_sum: f32 = row.iter().sum();
+                let deviation = (row_sum - 1.0).abs();
+                ensure!(
+                    deviation <= TRANSITION_ROW_SUM_TOL,
+                    "TransitionPattern::Provided row {row_idx} must sum to 1 within {} (got {row_sum}, deviation {deviation})",
+                    TRANSITION_ROW_SUM_TOL
+                );
+            }
+            Ok(matrix.clone())
+        }
     }
-    q
 }
 
 /// Bernoulli edges on off-diagonal; diagonal forced to 1.
@@ -302,12 +374,69 @@ mod tests {
 
     #[test]
     fn trans_mat_matches_python_doc_example() {
-        let q = get_trans_mat(3);
+        let q = get_trans_mat(&TransitionPattern::default(), 3).unwrap();
         assert!((q[[0, 0]] - 0.9).abs() < 1e-6);
         assert!((q[[0, 1]] - 0.1).abs() < 1e-6);
         assert!((q[[1, 1]] - 0.9).abs() < 1e-6);
         assert!((q[[2, 2]] - 0.9).abs() < 1e-6);
         assert!((q[[2, 0]] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cyclic_size_one_is_identity() {
+        let q = get_trans_mat(&TransitionPattern::Cyclic { self_prob: 0.9 }, 1).unwrap();
+        assert_eq!(q.shape(), [1, 1]);
+        assert!((q[[0, 0]] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cyclic_self_prob_zero_three_states() {
+        let q = get_trans_mat(&TransitionPattern::Cyclic { self_prob: 0.0 }, 3).unwrap();
+        assert!((q[[0, 1]] - 1.0).abs() < 1e-6);
+        assert!((q[[1, 2]] - 1.0).abs() < 1e-6);
+        assert!((q[[2, 0]] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cyclic_self_prob_one_three_states() {
+        let q = get_trans_mat(&TransitionPattern::Cyclic { self_prob: 1.0 }, 3).unwrap();
+        for i in 0..3 {
+            assert!((q[[i, i]] - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn cyclic_rejects_negative_self_prob() {
+        let err = get_trans_mat(&TransitionPattern::Cyclic { self_prob: -0.5 }, 3).unwrap_err();
+        assert!(err.to_string().contains("self_prob"));
+    }
+
+    #[test]
+    fn provided_rejects_infinity() {
+        let mut m = Array2::<f32>::zeros((2, 2));
+        m[[0, 0]] = f32::INFINITY;
+        m[[0, 1]] = 0.0;
+        m[[1, 0]] = 0.5;
+        m[[1, 1]] = 0.5;
+        let err = get_trans_mat(&TransitionPattern::Provided(m), 2).unwrap_err();
+        assert!(err.to_string().contains("(0, 0)"));
+    }
+
+    #[test]
+    fn provided_rejects_negative_entry() {
+        let mut m = Array2::<f32>::zeros((2, 2));
+        m[[0, 0]] = 1.0;
+        m[[0, 1]] = 0.0;
+        m[[1, 0]] = -0.1;
+        m[[1, 1]] = 1.1;
+        let err = get_trans_mat(&TransitionPattern::Provided(m), 2).unwrap_err();
+        assert!(err.to_string().contains("(1, 0)"));
+    }
+
+    #[test]
+    fn get_trans_mat_rejects_size_zero() {
+        let err = get_trans_mat(&TransitionPattern::default(), 0).unwrap_err();
+        assert!(err.to_string().contains("size"));
     }
 
     #[test]

@@ -11,3 +11,4 @@ pub use io::{
     load_manifest, load_tensor_f32, load_tensor_i32, save_train_test, Manifest,
     MANIFEST_SCHEMA_VERSION,
 };
+pub use transitions::TransitionPattern;

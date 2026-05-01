@@ -1,6 +1,6 @@
 # PRD: Port identifiable-SDS (SNLDS) to Burn
 
-**Document version:** 1.18  
+**Document version:** 1.19  
 **Last updated:** 2026-04-29  
 **Status:** Draft (living document)
 
@@ -22,6 +22,7 @@ This file is the **single source of truth** for the Burn port. **Update it when 
 
 | Date       | Version | Summary |
 |------------|---------|---------|
+| 2026-04-29 | 1.19    | **Markov topology follow-up (`feat/markov-topology-pluggable`):** `TransitionPattern { Cyclic { self_prob }, Provided(Array2) }` on `GenConfig`; cyclic `K=1` returns `[[1.0]]`; `get_trans_mat` validates once per run and threads `Q` through `roll_sequences`; expanded transition tests (boundaries, `size==0` rejection, Provided errors with indices). See [docs/CLEANUP-hardcoded-values.md](CLEANUP-hardcoded-values.md) PR 4. |
 | 2026-04-29 | 1.18    | **M1 schema v4 / simulator hparams:** surface `init_noise_std`, `init_mean_std`, `transition_step_var`, `emission_hidden_dim`, `initial_distribution` on `GenConfig`; persist the four scalars in `Manifest`; bump `MANIFEST_SCHEMA_VERSION` to **4** with serde defaults so v3 files still load. `EMISSION_HIDDEN_DIM` becomes a default, not a fixed constant. See [docs/M1.md](M1.md) and [docs/CLEANUP-hardcoded-values.md](CLEANUP-hardcoded-values.md) PR 3. |
 | 2026-04-29 | 1.17    | **Train/eval config snapshot:** `snlds-train` adds `obs_noise_var` to `TrainConfig` + CLI and writes `<output_dir>/train_config.json` (`hidden_dim`, `beta`, `temperature`, `obs_noise_var`); `snlds-eval` reads it automatically with optional overrides. M1 doc block now lists v1 history. |
 | 2026-04-29 | 1.16    | **M-Viz+ extension (feat/m-viz-graphs):** Markov-chain graph view + Figure-6-style segmentation panels in `snlds-viz` (`log_transition_matrix`, `log_state_strip`, `log_gamma_heatmap`, palettes in `colormap.rs`); **new `snlds-eval` crate/binary** consumes a checkpoint and logs `q_inferred` + posteriors; **M1 schema v3** persists `q_true`/`pi_true`. Trackers: [M1.md](M1.md), [M-Viz+.md](M-Viz+.md). |
@@ -81,7 +82,7 @@ Port the **Switching Nonlinear Dynamical System (SNLDS)** training stack from th
 | **Encoder** | **Minimum:** `recurrent` (bi-LSTM → causal LSTM → Gaussian params) matching Python. **Fallback milestone:** `factored` MLP encoder for earlier integration tests. |
 | **Inference** | `_compute_local_evidence`, `_alpha`, `_beta`; `inference='alpha'` ELBO path using `log_Z`; optional non-alpha path deferred unless needed. |
 | **Loss / forward** | Reconstruction (factorized Normal log-prob), entropy / KL terms for \(q(z)\), MSM term aggregation consistent with Python. |
-| **Data generation** | Markov \(\pi\) and \(Q\) from `get_trans_mat`; latent rollouts with cosine / polynomial / softplus-style dynamics; batched leaky-ReLU **`func_leaky_relu_batch`** for observations; train/test splits; **SafeTensors on disk** by default (optional `.npy`/NPZ for parity scripts). |
+| **Data generation** | Markov \(\pi\) and \(Q\) from `get_trans_mat(&cfg.transition, num_states)` (`TransitionPattern`: cyclic or caller-provided row-stochastic matrix); latent rollouts with cosine / polynomial / softplus-style dynamics; batched leaky-ReLU **`func_leaky_relu_batch`** for observations; train/test splits; **SafeTensors on disk** by default (optional `.npy`/NPZ for parity scripts). |
 | **Training** | Minibatches, Adam, LR schedule (StepLR analogue), gradient clipping, early-stop hooks matching key thresholds where documented, multi-restart loops, checkpoints. |
 | **Optional NeuralMSM** | Fit on PCA-reduced observations (latent dimension); copy into SNLDS: transitions, \(\log Q\), \(\log \pi\), `init_mean`, `init_cov`; then run main training. |
 | **Rerun visualization** | Log per-timestep scalars (e.g. \(\gamma_{t,k}\) vs \(t\) for each discrete state \(k\)), latent/observation trajectories (2D as paths or higher-D as components), decoded rollouts, and optional heatmaps. Align naming with a stable **log schema** (e.g. `snlds/state_posterior/k`, `snlds/latent/true`). |

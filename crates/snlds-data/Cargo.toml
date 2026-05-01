@@ -26,6 +26,7 @@ default = ["cli"]
 cli = ["dep:clap"]
 
 [dev-dependencies]
+ndarray = { version = "0.16", features = ["std"] }
 tempfile = "3"
 
 [[bin]]

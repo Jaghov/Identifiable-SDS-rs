@@ -1,10 +1,12 @@
 //! Deterministic generation + SafeTensors round-trip (M1 gates).
 
+use ndarray::array;
 use safetensors::SafeTensors;
 use snlds_data::io::MANIFEST_SCHEMA_VERSION;
 use snlds_data::{
     generate_train_test, load_manifest, load_tensor_f32, load_tensor_i32, save_train_test,
     transitions::get_trans_mat, GenConfig, Manifest, ObservationKind, SimulatorKind, TrainTest,
+    TransitionPattern,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -216,7 +218,11 @@ fn safetensors_persists_q_and_pi_true() {
 
     // q_true matches the deterministic cyclic constructor.
     let q_loaded = load_tensor_f32(&st_path, "q_true").unwrap();
-    let q_expected: Vec<f32> = get_trans_mat(cfg.num_states).iter().copied().collect();
+    let q_expected: Vec<f32> = get_trans_mat(&cfg.transition, cfg.num_states)
+        .unwrap()
+        .iter()
+        .copied()
+        .collect();
     assert_eq!(q_loaded, q_expected);
 
     // pi_true is uniform 1/K.
@@ -230,9 +236,61 @@ fn safetensors_persists_q_and_pi_true() {
 
 #[test]
 fn transition_matrix_three_states() {
-    let q = get_trans_mat(3);
+    let q = get_trans_mat(&TransitionPattern::default(), 3).unwrap();
     assert_eq!(q.shape(), [3, 3]);
-    assert!((q.sum() - 3.0).abs() < 1e-4);
+    assert!((q.sum() - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn cyclic_self_prob_threads_through_to_q_true() {
+    let cfg = GenConfig {
+        transition: TransitionPattern::Cyclic { self_prob: 0.75 },
+        ..cosine_tiny_cfg()
+    };
+    let tt = generate_train_test(&cfg).unwrap();
+    let expected = get_trans_mat(&cfg.transition, cfg.num_states).unwrap();
+    assert_eq!(tt.q_true, expected);
+}
+
+#[test]
+fn provided_transition_matrix_threads_through_to_q_true() {
+    let q = array![[0.4f32, 0.6], [0.2f32, 0.8]];
+    let cfg = GenConfig {
+        num_states: 2,
+        dim_obs: 2,
+        dim_latent: 2,
+        transition: TransitionPattern::Provided(q.clone()),
+        ..cosine_tiny_cfg()
+    };
+    let tt = generate_train_test(&cfg).unwrap();
+    assert_eq!(tt.q_true, q);
+}
+
+#[test]
+fn single_state_cyclic_q_true_is_identity() {
+    let cfg = GenConfig {
+        num_states: 1,
+        dim_obs: 2,
+        dim_latent: 2,
+        seq_length: 4,
+        num_samples: 8,
+        transition: TransitionPattern::Cyclic { self_prob: 0.9 },
+        ..GenConfig::default()
+    };
+    let tt = generate_train_test(&cfg).unwrap();
+    assert_eq!(tt.q_true.shape(), [1, 1]);
+    assert!((tt.q_true[[0, 0]] - 1.0).abs() < 1e-6);
+    assert_state_range(&tt, 1);
+}
+
+#[test]
+fn num_states_zero_errors_before_rollout() {
+    let cfg = GenConfig {
+        num_states: 0,
+        ..GenConfig::default()
+    };
+    let err = generate_train_test(&cfg).unwrap_err().to_string();
+    assert!(err.contains("num_states"), "{err}");
 }
 
 #[test]

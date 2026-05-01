@@ -3,7 +3,7 @@
 use crate::polynomial::sklearn_poly_output_count;
 use crate::transitions::{
     func_cosine_with_sparsity, func_leaky_relu_batch, get_trans_mat, sample_adj_mat,
-    CosineStateParams, LeakyParams, PolynomialStateParams, EMISSION_HIDDEN_DIM,
+    CosineStateParams, LeakyParams, PolynomialStateParams, TransitionPattern, EMISSION_HIDDEN_DIM,
 };
 use anyhow::ensure;
 use ndarray::{s, Array1, Array2, Array3};
@@ -85,6 +85,9 @@ pub struct GenConfig {
     /// [`crate::render::draw_sequence`]. When `Image`, [`generate_train_test`] enforces
     /// `dim_latent == 2` and `dim_obs == res * res * 3` and `res >= 1`.
     pub observation: ObservationKind,
+    /// Markov transition matrix topology. Default cyclic `0.9/0.1` matches the historical
+    /// hardcoded chain; see [`crate::transitions::get_trans_mat`].
+    pub transition: TransitionPattern,
 }
 
 impl Default for GenConfig {
@@ -105,6 +108,7 @@ impl Default for GenConfig {
             emission_hidden_dim: EMISSION_HIDDEN_DIM,
             initial_distribution: None,
             observation: ObservationKind::Vector,
+            transition: TransitionPattern::default(),
         }
     }
 }
@@ -130,6 +134,7 @@ pub struct TrainTest {
 /// Generate train (`N=num_samples`) and test (`max(1, num_samples // 10)`) splits.
 ///
 /// Returns `Err` if any simulator hyperparameter is invalid:
+/// - `num_states == 0`, or [`crate::transitions::get_trans_mat`] rejects `transition`,
 /// - `init_noise_std` / `init_mean_std` not finite or not `> 0`,
 /// - `transition_step_var` not finite or not `>= 0`,
 /// - `initial_distribution` is `Some(_)` but wrong length, contains non-finite or
@@ -143,8 +148,13 @@ pub fn generate_train_test(cfg: &GenConfig) -> anyhow::Result<TrainTest> {
     generate_split(rng, cfg, n_train, n_test)
 }
 
-/// Validate the simulator scalar invariants documented on each `GenConfig` field.
-fn validate_simulator_hparams(cfg: &GenConfig) -> anyhow::Result<()> {
+/// Validate scalar invariants on `GenConfig` (including `num_states > 0`).
+fn validate_simulator_scalars(cfg: &GenConfig) -> anyhow::Result<()> {
+    ensure!(
+        cfg.num_states > 0,
+        "num_states must be > 0 (got {})",
+        cfg.num_states
+    );
     ensure!(
         cfg.init_noise_std.is_finite() && cfg.init_noise_std > 0.0,
         "init_noise_std must be finite and > 0 (got {})",
@@ -177,11 +187,8 @@ fn validate_simulator_hparams(cfg: &GenConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Validate `cfg.initial_distribution` and return the effective distribution used
-/// for sampling `s_0` and persisted as `pi_true`. Also validates the simulator
-/// scalar invariants (`init_noise_std`, `init_mean_std`, `transition_step_var`).
-fn resolved_initial_distribution(cfg: &GenConfig) -> anyhow::Result<Vec<f32>> {
-    validate_simulator_hparams(cfg)?;
+/// Resolve `initial_distribution` after [`validate_simulator_scalars`] has run.
+fn resolved_pi(cfg: &GenConfig) -> anyhow::Result<Vec<f32>> {
     match &cfg.initial_distribution {
         None => Ok(vec![1.0 / cfg.num_states as f32; cfg.num_states]),
         Some(probs) => {
@@ -211,9 +218,13 @@ fn generate_split(
     n_train: usize,
     n_test: usize,
 ) -> anyhow::Result<TrainTest> {
-    let pi = resolved_initial_distribution(cfg)?;
-    let (latents_train, obs_train_raw, states_train) = roll_sequences(&mut rng, cfg, n_train, &pi);
-    let (latents_test, obs_test_raw, states_test) = roll_sequences(&mut rng, cfg, n_test, &pi);
+    validate_simulator_scalars(cfg)?;
+    let q_true = get_trans_mat(&cfg.transition, cfg.num_states)?;
+    let pi = resolved_pi(cfg)?;
+    let (latents_train, obs_train_raw, states_train) =
+        roll_sequences(&mut rng, cfg, n_train, &pi, &q_true);
+    let (latents_test, obs_test_raw, states_test) =
+        roll_sequences(&mut rng, cfg, n_test, &pi, &q_true);
 
     // For ObservationKind::Image the leaky-ReLU emission output is discarded and
     // replaced with rendered RGB frames flattened to [N, T, res*res*3]. The model
@@ -226,7 +237,6 @@ fn generate_split(
         ),
     };
 
-    let q_true = crate::transitions::get_trans_mat(cfg.num_states);
     let pi_true = Array1::from_vec(pi);
     Ok(TrainTest {
         latents_train,
@@ -304,12 +314,12 @@ fn roll_sequences(
     cfg: &GenConfig,
     n: usize,
     pi: &[f32],
+    q: &Array2<f32>,
 ) -> (Array3<f32>, Array3<f32>, Array2<i32>) {
     let seq_len = cfg.seq_length;
     let k = cfg.num_states;
     let dim_latent = cfg.dim_latent;
     let hidden_dim = cfg.emission_hidden_dim;
-    let q = get_trans_mat(k);
     let leaky = rand_leaky(rng, cfg.dim_obs, cfg.dim_latent, hidden_dim);
 
     let sim = match cfg.kind {
@@ -353,10 +363,10 @@ fn roll_sequences(
     let mut states = Array2::<i32>::zeros((n, seq_len));
 
     let init_noise = Normal::new(0.0f32, cfg.init_noise_std)
-        .expect("init_noise_std validated by validate_simulator_hparams");
+        .expect("init_noise_std validated by validate_simulator_scalars");
     let init_means: Array2<f32> = {
         let normal = Normal::new(0.0f32, cfg.init_mean_std)
-            .expect("init_mean_std validated by validate_simulator_hparams");
+            .expect("init_mean_std validated by validate_simulator_scalars");
         let mut m = Array2::<f32>::zeros((k, dim_latent));
         for s in 0..k {
             for j in 0..dim_latent {
@@ -382,7 +392,7 @@ fn roll_sequences(
     let scale_var = cfg.transition_step_var;
     let scale_std = scale_var.sqrt();
     let step_noise = Normal::new(0.0f32, scale_std)
-        .expect("transition_step_var validated by validate_simulator_hparams (>= 0)");
+        .expect("transition_step_var validated by validate_simulator_scalars (>= 0)");
 
     for ti in 1..seq_len {
         for ni in 0..n {
