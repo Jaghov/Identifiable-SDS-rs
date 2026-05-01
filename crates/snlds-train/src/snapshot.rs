@@ -55,6 +55,12 @@ impl TrainSnapshot {
         let bytes = std::fs::read(&path).with_context(|| format!("read snapshot {path:?}"))?;
         let snapshot: Self =
             serde_json::from_slice(&bytes).with_context(|| format!("parse snapshot {path:?}"))?;
+        if snapshot.schema_version != TRAIN_SNAPSHOT_SCHEMA_VERSION {
+            anyhow::bail!(
+                "snapshot {path:?} has schema_version {} but loader expects {TRAIN_SNAPSHOT_SCHEMA_VERSION}",
+                snapshot.schema_version
+            );
+        }
         Ok(snapshot)
     }
 
@@ -84,5 +90,26 @@ mod tests {
         let bytes = serde_json::to_vec(&original).expect("serialize");
         let parsed: TrainSnapshot = serde_json::from_slice(&bytes).expect("deserialize");
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn load_rejects_mismatched_schema_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(TRAIN_SNAPSHOT_FILENAME);
+        // Hand-crafted v1 snapshot (no `kind`, schema_version: 1).
+        // Mismatched-version fixture: all required v2 fields present so serde
+        // succeeds; schema_version is non-2 so the loader's version check is
+        // what should reject it.
+        std::fs::write(
+            &path,
+            br#"{"schema_version":99,"hidden_dim":32,"beta":1.0,"temperature":1.0,"obs_noise_var":5e-4,"kind":"Mlp"}"#,
+        )
+        .expect("write fixture");
+        let err = TrainSnapshot::load_from_dir(tmp.path()).expect_err("expected load failure");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("schema_version"),
+            "error should mention schema_version, got: {msg}"
+        );
     }
 }

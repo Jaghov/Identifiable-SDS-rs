@@ -244,21 +244,21 @@ fn generate_split(
 /// flat RGB frame, returning `[N, T, res*res*3]`. Pixel ordering matches
 /// `draw_sequence`'s `[T, res, res, 3]` (NHWC) flattened in row-major order.
 fn render_obs_batch(latents: &Array3<f32>, res: usize) -> Array3<f32> {
-    let n = latents.shape()[0];
-    let t_len = latents.shape()[1];
+    let num_samples = latents.shape()[0];
+    let seq_len = latents.shape()[1];
     let flat_dim = res * res * 3;
-    let mut obs = Array3::<f32>::zeros((n, t_len, flat_dim));
-    for ni in 0..n {
-        let traj = latents.slice(s![ni, .., ..]);
+    let mut obs = Array3::<f32>::zeros((num_samples, seq_len, flat_dim));
+    for sample_idx in 0..num_samples {
+        let traj = latents.slice(s![sample_idx, .., ..]);
         let frames = crate::render::draw_sequence(traj, res);
         // frames shape: [T, res, res, 3]. Flatten the trailing three axes per timestep.
-        for ti in 0..t_len {
-            let frame_t = frames.slice(s![ti, .., .., ..]);
+        for time_idx in 0..seq_len {
+            let frame_t = frames.slice(s![time_idx, .., .., ..]);
             let mut flat_idx = 0usize;
             for row in 0..res {
                 for col in 0..res {
                     for ch in 0..3 {
-                        obs[[ni, ti, flat_idx]] = frame_t[[row, col, ch]];
+                        obs[[sample_idx, time_idx, flat_idx]] = frame_t[[row, col, ch]];
                         flat_idx += 1;
                     }
                 }

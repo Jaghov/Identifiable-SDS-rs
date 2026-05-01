@@ -37,27 +37,27 @@ pub fn draw_sequence(latents: ArrayView2<f32>, res: usize) -> Array4<f32> {
     let mut blur_scratch = Array3::<f32>::zeros([res, res, 3]);
     let mut frames = Array4::<f32>::zeros([t_len, res, res, 3]);
 
-    for t in 0..t_len {
-        let x = latents[[t, 0]];
-        let y = latents[[t, 1]];
+    for time_idx in 0..t_len {
+        let world_x = latents[[time_idx, 0]];
+        let world_y = latents[[time_idx, 1]];
 
         // Map world (x, y) → pixel (col, row).
-        let col = ((x - X_MIN) / space_res) as isize;
-        let row = ((y - Y_MIN) / space_res) as isize;
+        let centre_col = ((world_x - X_MIN) / space_res) as isize;
+        let centre_row = ((world_y - Y_MIN) / space_res) as isize;
 
         // Fill circle.
-        let r = radius as isize;
-        for dy in -r..=r {
-            for dx in -r..=r {
-                if dx * dx + dy * dy <= r * r {
-                    let c = col + dx;
-                    let ro = row + dy;
-                    if c >= 0 && c < res as isize && ro >= 0 && ro < res as isize {
-                        let c = c as usize;
-                        let ro = ro as usize;
-                        frames[[t, ro, c, 0]] = BALL_COLOR[0];
-                        frames[[t, ro, c, 1]] = BALL_COLOR[1];
-                        frames[[t, ro, c, 2]] = BALL_COLOR[2];
+        let radius_i = radius as isize;
+        for dy in -radius_i..=radius_i {
+            for dx in -radius_i..=radius_i {
+                if dx * dx + dy * dy <= radius_i * radius_i {
+                    let col = centre_col + dx;
+                    let row = centre_row + dy;
+                    if col >= 0 && col < res as isize && row >= 0 && row < res as isize {
+                        let col_idx = col as usize;
+                        let row_idx = row as usize;
+                        frames[[time_idx, row_idx, col_idx, 0]] = BALL_COLOR[0];
+                        frames[[time_idx, row_idx, col_idx, 1]] = BALL_COLOR[1];
+                        frames[[time_idx, row_idx, col_idx, 2]] = BALL_COLOR[2];
                     }
                 }
             }
@@ -65,21 +65,21 @@ pub fn draw_sequence(latents: ArrayView2<f32>, res: usize) -> Array4<f32> {
 
         // 2×2 box blur on this frame in-place using scratch buffer.
         {
-            let frame = frames.index_axis(ndarray::Axis(0), t);
+            let frame = frames.index_axis(ndarray::Axis(0), time_idx);
             box_blur_2x2(frame.view(), res, &mut blur_scratch);
         }
         frames
-            .index_axis_mut(ndarray::Axis(0), t)
+            .index_axis_mut(ndarray::Axis(0), time_idx)
             .assign(&blur_scratch);
     }
 
     // Add background and clamp.
-    for t in 0..t_len {
+    for time_idx in 0..t_len {
         for row in 0..res {
             for col in 0..res {
                 for ch in 0..3 {
-                    let v = frames[[t, row, col, ch]] + BG_COLOR[ch];
-                    frames[[t, row, col, ch]] = v.clamp(0.0, 1.0);
+                    let pixel = frames[[time_idx, row, col, ch]] + BG_COLOR[ch];
+                    frames[[time_idx, row, col, ch]] = pixel.clamp(0.0, 1.0);
                 }
             }
         }
@@ -124,8 +124,8 @@ mod tests {
     fn values_in_range() {
         let latents = arr2(&[[0.5_f32, -0.5]]);
         let frames = draw_sequence(latents.view(), 64);
-        for v in frames.iter() {
-            assert!(*v >= 0.0 && *v <= 1.0, "pixel {v} out of [0,1]");
+        for pixel in frames.iter() {
+            assert!(*pixel >= 0.0 && *pixel <= 1.0, "pixel {pixel} out of [0,1]");
         }
     }
 

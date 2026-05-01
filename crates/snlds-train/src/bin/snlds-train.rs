@@ -3,7 +3,7 @@
 use anyhow::Result;
 use burn::backend::{ndarray::NdArrayDevice, Autodiff, NdArray};
 use clap::{Parser, ValueEnum};
-use snlds_model::EncoderKind;
+use snlds_model::{validate_cnn_res, EncoderKind};
 use snlds_train::{
     build_model_config, load_train_obs, load_train_obs_array, run_warm_start, train_with_model,
     MsmWarmStartConfig, TrainConfig, DEFAULT_OBS_NOISE_VAR,
@@ -114,7 +114,10 @@ fn resolve_encoder_kind(encoder: EncoderCli, res: Option<usize>) -> Result<Encod
         (EncoderCli::Mlp, Some(res)) => {
             anyhow::bail!("--res {res} given with --encoder mlp; --res is only valid for cnn")
         }
-        (EncoderCli::Cnn, Some(res)) => Ok(EncoderKind::Cnn { res }),
+        (EncoderCli::Cnn, Some(res)) => {
+            validate_cnn_res(res).map_err(|err| anyhow::anyhow!(err))?;
+            Ok(EncoderKind::Cnn { res })
+        }
         (EncoderCli::Cnn, None) => {
             anyhow::bail!("--encoder cnn requires --res <usize> (e.g. 16, 32)")
         }
@@ -162,4 +165,48 @@ fn main() -> Result<()> {
 
     train_with_model::<TrainBackend>(&config, initial_model, obs_tensor, &device)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_encoder_kind_rejects_non_power_of_two_res() {
+        let err = resolve_encoder_kind(EncoderCli::Cnn, Some(24)).expect_err("res=24 must fail");
+        assert!(
+            format!("{err:#}").contains("power of 2"),
+            "error should explain validation rule, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_encoder_kind_rejects_too_small_res() {
+        let err = resolve_encoder_kind(EncoderCli::Cnn, Some(8)).expect_err("res=8 must fail");
+        assert!(format!("{err:#}").contains(">= 16"));
+    }
+
+    #[test]
+    fn resolve_encoder_kind_rejects_mlp_with_res() {
+        let err = resolve_encoder_kind(EncoderCli::Mlp, Some(32)).expect_err("must reject");
+        assert!(format!("{err:#}").contains("--res"));
+    }
+
+    #[test]
+    fn resolve_encoder_kind_rejects_cnn_without_res() {
+        let err = resolve_encoder_kind(EncoderCli::Cnn, None).expect_err("must reject");
+        assert!(format!("{err:#}").contains("--res"));
+    }
+
+    #[test]
+    fn resolve_encoder_kind_accepts_valid_pairings() {
+        assert_eq!(
+            resolve_encoder_kind(EncoderCli::Mlp, None).unwrap(),
+            EncoderKind::Mlp
+        );
+        assert_eq!(
+            resolve_encoder_kind(EncoderCli::Cnn, Some(16)).unwrap(),
+            EncoderKind::Cnn { res: 16 }
+        );
+    }
 }

@@ -21,7 +21,7 @@ use burn::{
         conv::{Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig},
         LeakyReluConfig, PaddingConfig2d,
     },
-    tensor::{activation::sigmoid, backend::Backend, Tensor},
+    tensor::{activation::relu, backend::Backend, Tensor},
 };
 
 /// Negative slope used by every CNN activation; matches the Python reference.
@@ -64,7 +64,7 @@ pub struct CnnEncoderConfig {
 
 impl CnnEncoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> CnnEncoder<B> {
-        validate_cnn_res(self.res).expect("res validated by SnldsConfig::init");
+        validate_cnn_res(self.res).expect("callers must call validate_cnn_res(res) before init");
         let n_layers = n_layers_for_res(self.res);
 
         let in_conv = Conv2dConfig::new([3, self.hidden_dim], [3, 3])
@@ -140,7 +140,9 @@ impl<B: Backend> CnnEncoder<B> {
         let nhwc = input.reshape([batch_size, self.res, self.res, 3]);
         let mut feature_map = nhwc.permute([0, 3, 1, 2]);
 
-        feature_map = self.activation.forward(self.in_conv.forward(feature_map));
+        // Python parity: `f.relu` on the input conv, `f.leaky_relu(0.2)` on the
+        // hidden convs (`identifiable-SDS/models/modules.py:265-268`).
+        feature_map = relu(self.in_conv.forward(feature_map));
         for (strided, refine) in self.strided_convs.iter().zip(self.refine_convs.iter()) {
             feature_map = self.activation.forward(strided.forward(feature_map));
             feature_map = self.activation.forward(refine.forward(feature_map));
@@ -166,7 +168,7 @@ pub struct CnnDecoderConfig {
 
 impl CnnDecoderConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> CnnDecoder<B> {
-        validate_cnn_res(self.res).expect("res validated by SnldsConfig::init");
+        validate_cnn_res(self.res).expect("callers must call validate_cnn_res(res) before init");
         let n_layers = n_layers_for_res(self.res);
 
         let projection_output_dim = self.hidden_dim * DECODER_INPUT_SPATIAL * DECODER_INPUT_SPATIAL;
@@ -213,8 +215,9 @@ impl CnnDecoderConfig {
     }
 }
 
-/// CNN decoder: `[B, input_dim] → [B, 3 * res * res]`. The output passes through
-/// `sigmoid` to match Python `torch.sigmoid(self.out_conv(...))`.
+/// CNN decoder: `[B, input_dim] → [B, 3 * res * res]`. Returns raw `final_conv`
+/// output (no nonlinearity), matching Python `CNNFastDecoder.forward` which
+/// returns `self.out_conv(x)` unwrapped.
 #[derive(Module, Debug)]
 pub struct CnnDecoder<B: Backend> {
     pub projection: Mlp<B>,
@@ -248,8 +251,11 @@ impl<B: Backend> CnnDecoder<B> {
             feature_map = self.activation.forward(refine.forward(feature_map));
         }
 
-        let logits = self.final_conv.forward(feature_map);
-        let pixels = sigmoid(logits);
+        // Output is unbounded (no sigmoid) — Python parity. The Gaussian
+        // reconstruction term in the ELBO measures squared distance; downstream
+        // consumers that need pixels in `[0, 1]` (e.g. visualisation) must
+        // clamp themselves.
+        let pixels = self.final_conv.forward(feature_map);
         // NCHW → NHWC then flatten so the layout matches `draw_sequence` output
         // and the data-crate flattening order.
         let nhwc = pixels.permute([0, 2, 3, 1]);

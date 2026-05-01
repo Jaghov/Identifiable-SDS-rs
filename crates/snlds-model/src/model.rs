@@ -166,7 +166,7 @@ impl SnldsConfig {
 ///
 /// Variants differ in size (the CNN holds `Vec<Conv2d>` plus a projection MLP);
 /// each `VariationalSnlds` carries exactly one encoder, so the unused-bytes
-/// cost the lint flags is irrelevant in practice.
+/// cost flagged by the lint is irrelevant in practice.
 #[allow(clippy::large_enum_variant)]
 #[derive(Module, Debug)]
 pub enum SnldsEncoder<B: Backend> {
