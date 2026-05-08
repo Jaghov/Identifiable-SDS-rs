@@ -29,17 +29,28 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **Training** prints per-epoch diagnostics to the terminal. **Artifacts:** `metadata.json` + `sequences.safetensors` in the data dir; `train_config.json` and `*.mpk` checkpoints in the train output dir. **Rerun:** log ground truth with `snlds-viz`, inferred posteriors / reconstructions with `snlds-eval`, then open the `.rrd` files in the [Rerun viewer](https://www.rerun.io/docs/getting-started/installing-viewer) (or pass `--spawn` where supported).
 
-**Checkpoint names** (Burn `CompactRecorder`):
+### Config file (`train.toml`)
 
-| Train mode | Final weights (after `--epochs N`) |
-|------------|-------------------------------------|
-| `VariationalSnlds` (default) | `checkpoint_XXXX.mpk` with `XXXX = N - 1` (zero-padded), e.g. `checkpoint_0019` for `N = 20`. |
-| `--neural-pca` | `npca_checkpoint_XXXX.mpk` (Neural PCA only; **not** for `snlds-eval`). |
-| `--flow-snlds` | `flow_checkpoint_XXXX.mpk` |
+Run from the **workspace root**. Hyperparameters live in [**`train.toml`**](train.toml); pass **`--config train.toml`**. Any CLI flag after `--config` overrides that field for that run (e.g. `--epochs 3`). A generic template is **[`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml)**.
 
-`snlds-eval` expects a **VariationalSnlds** or **FlowSNLDS** checkpoint; use the matching path above.
+```sh
+cargo run -p snlds-train --bin snlds-train -- --config train.toml
+```
+
+The checked-in **`train.toml`** is set up for **32×32 RGB bouncing-ball** data under `./out/ball` with **`mode = "flow_snlds"`** (Neural PCA + switching head, `encoder = "gen"`, …). For the **vector variational** walkthrough below, edit the file (or copy from `train.example.toml`): set `data_dir` / `output_dir`, `mode = "variational"`, `encoder = "mlp"` (or `"factored"`), and turn off flow-only fields as needed.
+
+**Checkpoint names** (Burn `CompactRecorder`; `XXXX = N - 1` for `epochs = N` in `train.toml` unless you override):
+
+| `mode` in `train.toml` | Final weights |
+|------------------------|---------------|
+| `variational` | `checkpoint_XXXX.mpk` |
+| `flow_snlds` | `flow_checkpoint_XXXX.mpk` |
+
+`snlds-eval` expects a **VariationalSnlds** or **FlowSNLDS** checkpoint; use the matching filename above. See [docs/FLOW_SNLDS.md](docs/FLOW_SNLDS.md) for the joint Flow objective and extra knobs (`w_msm`, Glow depth, rotation, …).
 
 ### 1) Vector observations (default `snlds-gen`)
+
+Point **`train.toml`** at `./out/vec` with **`mode = "variational"`**, **`encoder = "mlp"`** (or `"factored"`), and **`msm_init = false`** unless you want the NeuralMSM warm-start.
 
 ```sh
 cargo run -p snlds-data --bin snlds-gen -- \
@@ -48,68 +59,37 @@ cargo run -p snlds-data --bin snlds-gen -- \
 cargo run -p snlds-viz --bin snlds-viz -- \
   --input ./out/vec --output ./out/vec/gt.rrd --sequences 5
 
-cargo run -p snlds-train --bin snlds-train -- \
-  --data-dir ./out/vec --output-dir ./out/vec/ckpt \
-  --epochs 20 --batch-size 32
+cargo run -p snlds-train --bin snlds-train -- --config train.toml
 
 cargo run -p snlds-eval --bin snlds-eval -- \
   --data-dir ./out/vec --checkpoint ./out/vec/ckpt/checkpoint_0019.mpk \
   --output ./out/vec/inferred.rrd --sequences 5
 ```
 
+(Example eval path assumes `output_dir = "./out/vec/ckpt"` and `epochs = 20` in `train.toml`; adjust the checkpoint index if you change `epochs`.)
+
 Open `gt.rrd` and `inferred.rrd` in Rerun (or merge streams as you prefer).
 
-### 2) Bouncing ball – RGB frames (`--observation image`)
+### 2) Bouncing ball – RGB frames + FlowSNLDS (default `train.toml`)
 
- Simulator uses **2-D latent** ball dynamics and **`--num-states`** for the discrete Markov chain; **`dim_obs` / `dim_latent`** are fixed by `--res` (`dim_obs = 3·res²`, `dim_latent = 2`).
+The simulator uses **2-D latent** ball dynamics and **`--num-states`** for the discrete Markov chain; **`dim_obs` / `dim_latent`** are fixed by `--res` (`dim_obs = 3·res²`, `dim_latent = 2`). Keep **`train.toml`** aligned: **`data_dir` / `output_dir`**, **`mode = "flow_snlds"`**, **`encoder = "gen"`**, **`res = 32`**, and the Glow / weight fields already in the file.
 
 ```sh
 cargo run -p snlds-data --bin snlds-gen -- \
   --observation image --res 32 --num-states 3 \
-  --seq-length 64 --num-samples 256 --seed 1 --out ./out/ball
+  --seq-length 200 --num-samples 256 --seed 42 --out ./out/ball
 
 cargo run -p snlds-viz --bin snlds-viz -- \
   --input ./out/ball --output ./out/ball/gt.rrd --sequences 5
 
-cargo run -p snlds-train --bin snlds-train -- \
-  --data-dir ./out/ball --output-dir ./out/ball/ckpt \
-  --encoder cnn --res 32 --epochs 20 --batch-size 16
+cargo run -p snlds-train --bin snlds-train -- --config train.toml
 
 cargo run -p snlds-eval --bin snlds-eval -- \
-  --data-dir ./out/ball --checkpoint ./out/ball/ckpt/checkpoint_0019.mpk \
-  --output ./out/ball/inferred.rrd --sequences 5
-```
-
-### 3) Neural PCA or FlowSNLDS (`snlds-train` CLI modes)
-
-Pick **`--neural-pca`** or **`--flow-snlds`** (or set `mode` in `--config` TOML). Optional Glow coupling: `--npca-glow-coupling affine` (default) or `additive`. See [docs/FLOW_SNLDS.md](docs/FLOW_SNLDS.md) for the Flow joint objective.
-
-**Neural PCA only** (density on images; checkpoints are `npca_checkpoint_*.mpk`):
-
-```sh
-cargo run -p snlds-train --bin snlds-train -- \
-  --data-dir ./out/ball --output-dir ./out/ball/npca-ckpt \
-  --neural-pca --res 32 --epochs 10 --batch-size 16 \
-  --npca-glow-levels 2 --npca-glow-steps 2 --npca-glow-hidden 16 \
-  --npca-glow-coupling affine
-```
-
-**FlowSNLDS** (Neural PCA + switching head; checkpoints `flow_checkpoint_*.mpk`; eval-supported):
-
-```sh
-cargo run -p snlds-train --bin snlds-train -- \
-  --data-dir ./out/ball --output-dir ./out/ball/flow-ckpt \
-  --flow-snlds --encoder cnn --res 32 --epochs 10 --batch-size 8 \
-  --npca-glow-coupling affine --w-msm 1.0 --w-npca 1.0
-
-cargo run -p snlds-eval --bin snlds-eval -- \
-  --data-dir ./out/ball --checkpoint ./out/ball/flow-ckpt/flow_checkpoint_0009.mpk \
+  --data-dir ./out/ball --checkpoint ./out/ball/ckpt/flow_checkpoint_0009.mpk \
   --output ./out/ball/flow_inferred.rrd --sequences 5
 ```
 
-(Use `flow_checkpoint_{N-1:04}.mpk` for your chosen `--epochs N`.)
-
-You can move most of these settings into a TOML file (`--config path.toml`) and override individual fields from the CLI; see [`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml).
+(Eval checkpoint matches `epochs = 10` in the checked-in `train.toml`; use `flow_checkpoint_{N-1:04}.mpk` if you change `epochs`.)
 
 ---
 
@@ -212,18 +192,15 @@ let out = model.forward(obs_tensor, /* beta */ 1.0, /* obs_noise_var */ 5e-4, /*
 
 Loads data splits, trains on the autodiff `ndarray` backend, writes `CompactRecorder` checkpoints + `train_config.json`.
 
-CLI (`snlds-train`):
+CLI (`snlds-train`): prefer **`--config train.toml`** from the workspace root (see **[Config file (`train.toml`)](#config-file-train.toml)** above). CLI flags override the file when both are present.
 
 ```sh
-cargo run -p snlds-train --bin snlds-train -- \
-  --data-dir ./out/run1 --output-dir ./out/run1/ckpt \
-  --epochs 100 --batch-size 32 --lr 3e-4 \
-  --beta 1.0 --temperature 1.0 --grad-clip 1.0 \
-  --hidden-dim 64 --obs-noise-var 5e-4 \
-  --checkpoint-every 10
+cargo run -p snlds-train --bin snlds-train -- --config train.toml
+# e.g. one-off overrides:
+cargo run -p snlds-train --bin snlds-train -- --config train.toml --epochs 5 --lr 2e-4
 ```
 
-Optional TOML defaults (**CLI overrides** the file per field): **`--config train.toml`**. See [`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml).
+Templates: **[`train.toml`](train.toml)** (bundled bouncing-ball FlowSNLDS), **[`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml)** (variational vector defaults).
 
 Library API:
 

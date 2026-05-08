@@ -1,0 +1,50 @@
+# Template for `snlds-train --config …`. Copy and edit; CLI flags override these values when set.
+#
+# Example:
+#   cargo run -p snlds-train --bin snlds-train -- --config train.toml
+#   cargo run -p snlds-train --bin snlds-train -- --config train.toml --epochs 2
+
+data_dir = "./out/ball"
+output_dir = "./out/ball/ckpt"
+
+# variational | flow_snlds
+mode = "flow_snlds"
+
+npca_rotation = "svd"
+# npca_householder_reflectors = 10
+
+
+epochs = 10
+batch_size = 2
+lr = 1.0e-4
+weight_decay = 1e-4
+beta = 1.0
+temperature = 1.0
+grad_clip = 1.0
+checkpoint_every = 10
+hidden_dim = 64
+obs_noise_var = 0.0005
+seed = 42
+
+log_every_batch = 5
+transition_log_every_batches = 50
+# resume = "./ckpt/checkpoint_0009.mpk"
+
+msm_init = true
+msm_restarts = 3
+msm_epochs = 30
+msm_batch_size = 32
+msm_lr = 0.007
+msm_hidden_dim = 16
+
+# mlp | factored | cnn | gen  (clap: factored | gen)
+encoder = "gen"
+res = 32
+
+# Flow / Neural PCA weights and Glow (for neural_pca / flow_snlds modes)
+w_msm = 1.0
+w_npca = 1.0
+npca_glow_levels = 4
+npca_glow_steps = 16
+npca_glow_hidden = 128
+npca_glow_coupling = "additive"
