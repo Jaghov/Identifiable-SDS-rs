@@ -1,0 +1,51 @@
+# Template for `snlds-train --config …`. Copy and edit; CLI flags override these values when set.
+#
+# Example:
+#   cargo run -p snlds-train --bin snlds-train -- --config train.toml
+#   cargo run -p snlds-train --bin snlds-train -- --config train.toml --epochs 2
+
+data_dir = "./out/vec"
+output_dir = "./out/vec/ckpt"
+
+# variational | flow_snlds
+mode = "variational"
+
+epochs = 100
+batch_size = 32
+lr = 0.0003
+beta = 1.0
+temperature = 1.0
+grad_clip = 1.0
+checkpoint_every = 10
+# log_every_batch = 1
+# variational / flow_snlds: print learned Q every N minibatches (0 = epoch end only)
+# transition_log_every_batches = 50
+# AdamW decoupled weight decay for flow_snlds only (variational uses Adam).
+# weight_decay = 0.0001
+hidden_dim = 64
+obs_noise_var = 0.0005
+seed = 0
+# resume = "./ckpt/checkpoint_0009.mpk"
+
+msm_init = false
+msm_restarts = 3
+msm_epochs = 30
+msm_batch_size = 32
+msm_lr = 0.007
+msm_hidden_dim = 16
+
+# mlp | factored | cnn | gen  (clap: factored | gen)
+encoder = "mlp"
+# res = 32
+
+# --- Flow / Neural PCA weights and Glow (used when mode is flow_snlds or with --flow-snlds) ---
+# w_msm = 3.0      # MSM warmup epochs: effective_w_msm linearly ramps from 0 to cap over this many epochs
+# w_npca = 1.0
+# npca_glow_levels = 2
+# npca_glow_steps = 2
+# npca_glow_hidden = 16
+# npca_glow_coupling = "affine"
+# Neural PCA post-BN rotation: svd (Li & Hooi, default) | householder
+# npca_rotation = "householder"
+# Reflectors K when using householder (default 32; clamped to [1, D] at init)
+# npca_householder_reflectors = 32

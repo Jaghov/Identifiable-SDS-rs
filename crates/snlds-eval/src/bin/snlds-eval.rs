@@ -1,10 +1,10 @@
 use anyhow::Context;
-use burn::backend::NdArray;
+use burn::backend::LibTorch;
 use clap::Parser;
 use snlds_eval::{run_eval, EvalConfig};
 use std::path::PathBuf;
 
-type Backend = NdArray<f32>;
+type Backend = LibTorch<f32>;
 
 #[derive(Parser)]
 #[command(
@@ -46,12 +46,24 @@ struct Cli {
     #[arg(long)]
     obs_noise_var: Option<f32>,
 
-    /// Override the snapshot's `beta` weight on the discrete-state ELBO term (must be > 0).
+    /// Override the snapshot's `beta` weight on the discrete-state ELBO term (VariationalSnlds; must be > 0).
     #[arg(long)]
     beta: Option<f32>,
+
+    /// Override FlowSNLDS `w_msm`.
+    #[arg(long)]
+    w_msm: Option<f32>,
+
+    /// Override FlowSNLDS `w_npca`.
+    #[arg(long)]
+    w_npca: Option<f32>,
 }
 
 fn main() -> anyhow::Result<()> {
+    // Match the training-side TF32 setting: flow inverse round-trips need the full
+    // f32 mantissa to stay numerically tight.
+    glow_flow::disable_tf32();
+
     let cli = Cli::parse();
     let device = Default::default();
     let config = EvalConfig {
@@ -64,6 +76,8 @@ fn main() -> anyhow::Result<()> {
         temperature_override: cli.temperature,
         obs_noise_var_override: cli.obs_noise_var,
         beta_override: cli.beta,
+        w_msm_override: cli.w_msm,
+        w_npca_override: cli.w_npca,
     };
     run_eval::<Backend>(&config, &device).context("run snlds-eval")
 }

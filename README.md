@@ -5,6 +5,7 @@ Rust port of [identifiable-SDS](identifiable-SDS/README.md) using [Burn](https:/
 ## Requirements
 
 - Rust stable (1.80+)
+- Optional: [Rerun viewer](https://www.rerun.io/docs/getting-started/installing-viewer) (or `rerun --help`) to open `.rrd` logs from `snlds-viz` / `snlds-eval`
 
 ## Build & test
 
@@ -24,20 +25,99 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 `snlds-core` / M0 use **Burn 0.20** with the **`cpu`** feature (CubeCL-based CPU backend in this toolchain). `snlds-train` / `snlds-msm` / `snlds-eval` use the **`ndarray`** Burn backend (with `autodiff` for training). GPU paths may follow later — see [docs/PRD-burn-port.md](docs/PRD-burn-port.md).
 
+## See results (end-to-end)
+
+**Training** prints per-epoch diagnostics to the terminal. **Artifacts:** `metadata.json` + `sequences.safetensors` in the data dir; `train_config.json` and `*.mpk` checkpoints in the train output dir. **Rerun:** log ground truth with `snlds-viz`, inferred posteriors / reconstructions with `snlds-eval`, then open the `.rrd` files in the [Rerun viewer](https://www.rerun.io/docs/getting-started/installing-viewer) (or pass `--spawn` where supported).
+
+**Checkpoint names** (Burn `CompactRecorder`):
+
+| Train mode | Final weights (after `--epochs N`) |
+|------------|-------------------------------------|
+| `VariationalSnlds` (default) | `checkpoint_XXXX.mpk` with `XXXX = N - 1` (zero-padded), e.g. `checkpoint_0019` for `N = 20`. |
+| `--neural-pca` | `npca_checkpoint_XXXX.mpk` (Neural PCA only; **not** for `snlds-eval`). |
+| `--flow-snlds` | `flow_checkpoint_XXXX.mpk` |
+
+`snlds-eval` expects a **VariationalSnlds** or **FlowSNLDS** checkpoint; use the matching path above.
+
+### 1) Vector observations (default `snlds-gen`)
+
+```sh
+cargo run -p snlds-data --bin snlds-gen -- \
+  --out ./out/vec --seed 42 --num-states 3 --seq-length 64 --num-samples 128
+
+cargo run -p snlds-viz --bin snlds-viz -- \
+  --input ./out/vec --output ./out/vec/gt.rrd --sequences 5
+
+cargo run -p snlds-train --bin snlds-train -- \
+  --data-dir ./out/vec --output-dir ./out/vec/ckpt \
+  --epochs 20 --batch-size 32
+
+cargo run -p snlds-eval --bin snlds-eval -- \
+  --data-dir ./out/vec --checkpoint ./out/vec/ckpt/checkpoint_0019.mpk \
+  --output ./out/vec/inferred.rrd --sequences 5
+```
+
+Open `gt.rrd` and `inferred.rrd` in Rerun (or merge streams as you prefer).
+
+### 2) Bouncing ball – RGB frames (`--observation image`)
+
+ Simulator uses **2-D latent** ball dynamics and **`--num-states`** for the discrete Markov chain; **`dim_obs` / `dim_latent`** are fixed by `--res` (`dim_obs = 3·res²`, `dim_latent = 2`).
+
+```sh
+cargo run -p snlds-data --bin snlds-gen -- \
+  --observation image --res 32 --num-states 3 \
+  --seq-length 64 --num-samples 256 --seed 1 --out ./out/ball
+
+cargo run -p snlds-viz --bin snlds-viz -- \
+  --input ./out/ball --output ./out/ball/gt.rrd --sequences 5
+
+cargo run -p snlds-train --bin snlds-train -- \
+  --data-dir ./out/ball --output-dir ./out/ball/ckpt \
+  --encoder cnn --res 32 --epochs 20 --batch-size 16
+
+cargo run -p snlds-eval --bin snlds-eval -- \
+  --data-dir ./out/ball --checkpoint ./out/ball/ckpt/checkpoint_0019.mpk \
+  --output ./out/ball/inferred.rrd --sequences 5
+```
+
+### 3) Neural PCA or FlowSNLDS (`snlds-train` CLI modes)
+
+Pick **`--neural-pca`** or **`--flow-snlds`** (or set `mode` in `--config` TOML). Optional Glow coupling: `--npca-glow-coupling affine` (default) or `additive`. See [docs/FLOW_SNLDS.md](docs/FLOW_SNLDS.md) for the Flow joint objective.
+
+**Neural PCA only** (density on images; checkpoints are `npca_checkpoint_*.mpk`):
+
+```sh
+cargo run -p snlds-train --bin snlds-train -- \
+  --data-dir ./out/ball --output-dir ./out/ball/npca-ckpt \
+  --neural-pca --res 32 --epochs 10 --batch-size 16 \
+  --npca-glow-levels 2 --npca-glow-steps 2 --npca-glow-hidden 16 \
+  --npca-glow-coupling affine
+```
+
+**FlowSNLDS** (Neural PCA + switching head; checkpoints `flow_checkpoint_*.mpk`; eval-supported):
+
+```sh
+cargo run -p snlds-train --bin snlds-train -- \
+  --data-dir ./out/ball --output-dir ./out/ball/flow-ckpt \
+  --flow-snlds --encoder cnn --res 32 --epochs 10 --batch-size 8 \
+  --npca-glow-coupling affine --w-msm 1.0 --w-npca 1.0
+
+cargo run -p snlds-eval --bin snlds-eval -- \
+  --data-dir ./out/ball --checkpoint ./out/ball/flow-ckpt/flow_checkpoint_0009.mpk \
+  --output ./out/ball/flow_inferred.rrd --sequences 5
+```
+
+(Use `flow_checkpoint_{N-1:04}.mpk` for your chosen `--epochs N`.)
+
+You can move most of these settings into a TOML file (`--config path.toml`) and override individual fields from the CLI; see [`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml).
+
 ---
 
 ## Workspace crates
 
 The workspace is split by milestone. Library crates expose Rust APIs; the four crates with binaries (`snlds-data`, `snlds-viz`, `snlds-train`, `snlds-eval`) ship a CLI for end-to-end use.
 
-A typical end-to-end pipeline:
-
-```sh
-cargo run -p snlds-data  --bin snlds-gen   -- --out ./out/run1 --seed 42 --num-states 3 --seq-length 64 --num-samples 32
-cargo run -p snlds-viz   --bin snlds-viz   -- --input ./out/run1 --output ./out/run1/gt.rrd
-cargo run -p snlds-train --bin snlds-train -- --data-dir ./out/run1 --output-dir ./out/run1/ckpt --epochs 50
-cargo run -p snlds-eval  --bin snlds-eval  -- --data-dir ./out/run1 --checkpoint ./out/run1/ckpt/snlds_final.bin --output ./out/run1/inferred.rrd
-```
+Start from **[See results (end-to-end)](#see-results-end-to-end)** for runnable commands; the sections below document each crate in more detail.
 
 ### `snlds-core`
 
@@ -52,7 +132,7 @@ type B = Autodiff<Cpu<f32>>;
 
 ### `snlds-data` — synthetic generation + SafeTensors IO
 
-Generates cosine / polynomial SDS-style sequences and writes `sequences.safetensors` + `metadata.json. Latents and observations are **F32**; discrete states are **I32**.
+Generates cosine / polynomial SDS-style sequences and writes `sequences.safetensors` + `metadata.json`. Latents and observations are **F32**; discrete states are **I32**.
 
 CLI (`snlds-gen`):
 
@@ -61,6 +141,7 @@ cargo run -p snlds-data --bin snlds-gen -- \
   --seed 42 --dim-obs 2 --dim-latent 2 --num-states 3 \
   --seq-length 64 --num-samples 32 --data-type cosine \
   --out ./out/run1
+# Bouncing-ball RGB: e.g. `--observation image --res 32` (see **See results** above).
 # or --data-type poly --degree 3
 ```
 
@@ -112,9 +193,9 @@ log_transition_matrix(&rec, "snlds/markov/q_true", &tt.q_true.view());
 log_state_strip(&rec, "snlds/state/strip_true", tt.states_train.row(0));
 ```
 
-### `snlds-model` — `VariationalSnlds` + encoders/decoders
+### `snlds-model` — `VariationalSnlds` + encoders/decoders + Neural PCA
 
-Library only. Provides `VariationalSnlds`, the MLP/CNN encoders, and `SnldsConfig`.
+Library only. Provides `VariationalSnlds`, the MLP/CNN encoders, `SnldsConfig`, plus `npca` (`NeuralPca`, `NeuralPcaConfig`, `PatchMode`, `SigmaSchedule`) for Glow-followed Neural PCA experiments.
 
 ```rust
 use burn::backend::{Cpu, Autodiff};
@@ -141,6 +222,8 @@ cargo run -p snlds-train --bin snlds-train -- \
   --hidden-dim 64 --obs-noise-var 5e-4 \
   --checkpoint-every 10
 ```
+
+Optional TOML defaults (**CLI overrides** the file per field): **`--config train.toml`**. See [`crates/snlds-train/train.example.toml`](crates/snlds-train/train.example.toml).
 
 Library API:
 
@@ -178,9 +261,9 @@ CLI (`snlds-eval`):
 
 ```sh
 cargo run -p snlds-eval --bin snlds-eval -- \
-  --data-dir ./out/run1 --checkpoint ./out/run1/ckpt/snlds_final.bin \
+  --data-dir ./out/run1 --checkpoint ./out/run1/ckpt/checkpoint_0019.mpk \
   --output ./out/run1/inferred.rrd --sequences 5
-# add --spawn for the live viewer
+# add --spawn for the live viewer; checkpoint name must match `--epochs` (see [See results](#see-results-end-to-end))
 ```
 
 Library API:
@@ -190,7 +273,7 @@ use snlds_eval::{run_eval, EvalConfig};
 
 let cfg = EvalConfig {
     data_dir: "./out/run1".into(),
-    checkpoint: "./out/run1/ckpt/snlds_final.bin".into(),
+    checkpoint: "./out/run1/ckpt/checkpoint_0019.mpk".into(),
     output: "./out/run1/inferred.rrd".into(),
     spawn: false,
     sequences: 5,

@@ -1,3 +1,6 @@
 [workspace]
 members = ["crates/snlds-core", "crates/snlds-data", "crates/snlds-viz", "crates/snlds-model", "crates/snlds-train", "crates/snlds-msm", "crates/snlds-eval"]
 resolver = "2"
+
+# [dependencies]
+# glow_flow = { version = "0.1", git = "https://github.com/Jaghov/Glow-rs.git" }

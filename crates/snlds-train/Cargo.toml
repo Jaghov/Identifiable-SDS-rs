@@ -11,13 +11,19 @@ path = "src/bin/snlds-train.rs"
 snlds-model = { path = "../snlds-model" }
 snlds-data = { path = "../snlds-data" }
 snlds-msm = { path = "../snlds-msm" }
-burn = { version = "0.20.1", features = ["ndarray", "autodiff"] }
+burn = { version = "0.20.1", features = ["tch", "ndarray", "autodiff", "dataset"] }
+safetensors = "0.4"
+memmap2 = "0.9"
+bytemuck = "1"
+glow_flow = { version = "0.1", git = "https://github.com/Jaghov/Glow-rs.git", default-features = false, features = ["backend-ndarray", "backend-tch"] }
 ndarray = { version = "0.16", features = ["std"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 
 [dev-dependencies]
+serial_test = "3"
 tempfile = "3"

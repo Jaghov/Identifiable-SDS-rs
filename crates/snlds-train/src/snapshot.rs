@@ -19,12 +19,9 @@ pub const DEFAULT_OBS_NOISE_VAR: f32 = 5e-4;
 /// Filename written to `output_dir` so checkpoints carry their training context.
 pub const TRAIN_SNAPSHOT_FILENAME: &str = "train_config.json";
 
-/// Bump when the snapshot schema gains/loses fields. `2` adds `kind` for the
-/// M6 encoder/decoder selector. v1 snapshots are intentionally not loadable —
-/// no production checkpoints exist yet.
-pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const TRAIN_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
-/// Subset of [`crate::TrainConfig`] that downstream tools need to recover.
+/// Subset of [`crate::TrainConfig`] / flow training that downstream tools need.
 ///
 /// Excludes IO paths, RNG seed, optimizer-only flags (`grad_clip`, `learning_rate`,
 /// `checkpoint_every`), and resume settings since none of those affect inference.
@@ -37,6 +34,37 @@ pub struct TrainSnapshot {
     pub obs_noise_var: f32,
     /// Encoder/decoder family the run used. Required (no implicit default).
     pub kind: EncoderKind,
+    /// When set, checkpoints are [`snlds_model::FlowSnlds`] (joint NPCA + MSM).
+    #[serde(default)]
+    pub flow_snlds: Option<FlowSnldsSnapshotMeta>,
+}
+
+/// Extra fields for FlowSNLDS runs (written next to `train_config.json`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlowSnldsSnapshotMeta {
+    pub w_msm: f32,
+    pub w_npca: f32,
+    pub res: usize,
+    pub glow_levels: usize,
+    pub glow_steps: usize,
+    pub glow_hidden_features: usize,
+    /// `"affine"` or `"additive"`. Missing in older snapshots → affine.
+    #[serde(default = "default_flow_glow_coupling_affine")]
+    pub glow_coupling: String,
+    pub total_latent_dim: usize,
+    /// `svd` (default) or `householder`.
+    #[serde(default = "default_flow_npca_rotation")]
+    pub npca_rotation: String,
+    #[serde(default)]
+    pub npca_householder_reflectors: Option<usize>,
+}
+
+fn default_flow_glow_coupling_affine() -> String {
+    "affine".to_string()
+}
+
+fn default_flow_npca_rotation() -> String {
+    "svd".to_string()
 }
 
 impl TrainSnapshot {
@@ -55,10 +83,11 @@ impl TrainSnapshot {
         let bytes = std::fs::read(&path).with_context(|| format!("read snapshot {path:?}"))?;
         let snapshot: Self =
             serde_json::from_slice(&bytes).with_context(|| format!("parse snapshot {path:?}"))?;
-        if snapshot.schema_version != TRAIN_SNAPSHOT_SCHEMA_VERSION {
+        if snapshot.schema_version > TRAIN_SNAPSHOT_SCHEMA_VERSION {
             anyhow::bail!(
-                "snapshot {path:?} has schema_version {} but loader expects {TRAIN_SNAPSHOT_SCHEMA_VERSION}",
-                snapshot.schema_version
+                "snapshot {path:?} has schema_version {} but loader expects ..={}",
+                snapshot.schema_version,
+                TRAIN_SNAPSHOT_SCHEMA_VERSION
             );
         }
         Ok(snapshot)
@@ -86,6 +115,7 @@ mod tests {
             temperature: 1.0,
             obs_noise_var: 5e-4,
             kind: EncoderKind::Cnn { res: 16 },
+            flow_snlds: None,
         };
         let bytes = serde_json::to_vec(&original).expect("serialize");
         let parsed: TrainSnapshot = serde_json::from_slice(&bytes).expect("deserialize");
@@ -93,13 +123,36 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_mismatched_schema_version() {
+    fn round_trip_with_flow_meta() {
+        let original = TrainSnapshot {
+            schema_version: TRAIN_SNAPSHOT_SCHEMA_VERSION,
+            hidden_dim: 32,
+            beta: 0.0,
+            temperature: 1.0,
+            obs_noise_var: 5e-4,
+            kind: EncoderKind::Cnn { res: 16 },
+            flow_snlds: Some(FlowSnldsSnapshotMeta {
+                w_msm: 1.0,
+                w_npca: 0.5,
+                res: 16,
+                glow_levels: 2,
+                glow_steps: 2,
+                glow_hidden_features: 8,
+                glow_coupling: "affine".to_string(),
+                total_latent_dim: 192,
+                npca_rotation: "svd".to_string(),
+                npca_householder_reflectors: None,
+            }),
+        };
+        let bytes = serde_json::to_vec(&original).expect("serialize");
+        let parsed: TrainSnapshot = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn load_rejects_future_schema_version() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join(TRAIN_SNAPSHOT_FILENAME);
-        // Hand-crafted v1 snapshot (no `kind`, schema_version: 1).
-        // Mismatched-version fixture: all required v2 fields present so serde
-        // succeeds; schema_version is non-2 so the loader's version check is
-        // what should reject it.
         std::fs::write(
             &path,
             br#"{"schema_version":99,"hidden_dim":32,"beta":1.0,"temperature":1.0,"obs_noise_var":5e-4,"kind":"Mlp"}"#,

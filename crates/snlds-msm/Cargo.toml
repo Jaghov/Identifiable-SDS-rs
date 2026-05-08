@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 snlds-core = { path = "../snlds-core" }
 snlds-model = { path = "../snlds-model" }
-burn = { version = "0.20.1", features = ["ndarray", "autodiff"] }
+burn = { version = "0.20.1", features = ["tch", "ndarray", "autodiff"] }
 ndarray = { version = "0.16", features = ["std"] }
 linfa = "0.8"
 linfa-reduction = "0.8"

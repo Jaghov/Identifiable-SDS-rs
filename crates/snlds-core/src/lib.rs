@@ -2,15 +2,16 @@ pub mod hmm;
 
 #[cfg(test)]
 mod tests {
-    use burn::backend::cpu::CpuDevice;
-    use burn::backend::{Autodiff, Cpu};
+    use burn::backend::ndarray::NdArrayDevice;
+    use burn::backend::Autodiff;
+    use burn::backend::NdArray;
     use burn::tensor::Tensor;
 
-    type B = Cpu<f32>;
-    type AB = Autodiff<Cpu<f32>>;
+    type B = NdArray<f32>;
+    type AB = Autodiff<NdArray<f32>>;
 
-    fn cpu() -> CpuDevice {
-        CpuDevice
+    fn cpu() -> NdArrayDevice {
+        NdArrayDevice::Cpu
     }
 
     #[test]

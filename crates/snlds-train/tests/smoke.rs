@@ -67,6 +67,8 @@ fn train_one_step_no_panic() {
         temperature: 1.0,
         grad_clip: 1.0,
         checkpoint_every: 0,
+        log_every_batch: 0,
+        transition_log_every_batches: 0,
         hidden_dim: 8,
         obs_noise_var: 5e-4,
         seed: 0,
@@ -103,6 +105,8 @@ fn snapshot_persisted_next_to_checkpoint() {
         temperature: 0.7,
         grad_clip: 1.0,
         checkpoint_every: 1,
+        log_every_batch: 0,
+        transition_log_every_batches: 0,
         hidden_dim: 12,
         obs_noise_var: 7e-4,
         seed: 0,
@@ -121,6 +125,7 @@ fn snapshot_persisted_next_to_checkpoint() {
     assert!((loaded.beta - 0.9).abs() < 1e-6);
     assert!((loaded.temperature - 0.7).abs() < 1e-6);
     assert!((loaded.obs_noise_var - 7e-4).abs() < 1e-9);
+    assert!(loaded.flow_snlds.is_none());
 
     let checkpoint_path = output_dir.path().join("checkpoint_0000.mpk");
     let from_checkpoint =
@@ -148,6 +153,8 @@ fn checkpoint_round_trip() {
         temperature: 1.0,
         grad_clip: 1.0,
         checkpoint_every: 1,
+        log_every_batch: 0,
+        transition_log_every_batches: 0,
         hidden_dim: 8,
         obs_noise_var: 5e-4,
         seed: 0,
@@ -195,6 +202,8 @@ fn warm_start_then_train_no_panic() {
         temperature: 1.0,
         grad_clip: 1.0,
         checkpoint_every: 0,
+        log_every_batch: 0,
+        transition_log_every_batches: 0,
         hidden_dim: 8,
         obs_noise_var: 5e-4,
         seed: 0,

@@ -266,9 +266,9 @@ impl<B: Backend> CnnDecoder<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::Cpu;
+    use burn::backend::NdArray;
 
-    type Backend = Cpu<f32>;
+    type Backend = NdArray<f32>;
 
     #[test]
     fn n_layers_matches_python_reference() {

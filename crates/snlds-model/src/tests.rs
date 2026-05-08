@@ -1,19 +1,19 @@
 #[cfg(test)]
 mod model_tests {
     use crate::model::{EncoderKind, SnldsConfig};
-    use burn::backend::cpu::CpuDevice;
-    use burn::backend::{Autodiff, Cpu};
+    use burn::backend::ndarray::NdArrayDevice;
+    use burn::backend::{ndarray::NdArray, Autodiff};
     use burn::tensor::Tensor;
 
-    type CpuBackend = Cpu<f32>;
-    type AutodiffBackend = Autodiff<Cpu<f32>>;
+    type CpuBackend = NdArray<f32>;
+    type AutodiffBackend = Autodiff<NdArray<f32>>;
 
     fn small_config() -> SnldsConfig {
         SnldsConfig::new(4, 2, 8, 3)
     }
 
-    fn cpu_device() -> CpuDevice {
-        CpuDevice
+    fn cpu_device() -> NdArrayDevice {
+        NdArrayDevice::Cpu
     }
 
     #[test]

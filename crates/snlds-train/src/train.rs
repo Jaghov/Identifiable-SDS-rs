@@ -6,6 +6,7 @@ use anyhow::Context;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::module::Module;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
+use burn::prelude::Backend;
 use burn::record::{CompactRecorder, Recorder};
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Tensor;
@@ -34,6 +35,10 @@ pub struct TrainConfig {
     pub obs_noise_var: f32,
     pub seed: u64,
     pub resume_from: Option<PathBuf>,
+    /// Print a line every N minibatches within each epoch (`0` = off; `1` = every batch).
+    pub log_every_batch: usize,
+    /// Also print the learned row-stochastic `Q` every N minibatches (`0` = epoch end only).
+    pub transition_log_every_batches: usize,
     /// Encoder/decoder family forwarded to `SnldsConfig::kind`. Default is
     /// `EncoderKind::Mlp` (Python-`factored` parity); set to
     /// `EncoderKind::Cnn { res }` to train on flat-RGB image observations.
@@ -56,6 +61,8 @@ impl Default for TrainConfig {
             obs_noise_var: DEFAULT_OBS_NOISE_VAR,
             seed: 0,
             resume_from: None,
+            log_every_batch: 1,
+            transition_log_every_batches: 0,
             kind: EncoderKind::default(),
         }
     }
@@ -87,7 +94,7 @@ pub fn build_model_config(config: &TrainConfig, manifest: &snlds_data::Manifest)
 /// Run the training loop with a freshly initialised model. See
 /// [`train_with_model`] for the variant that accepts an externally prepared
 /// model (e.g. from M5 warm-start).
-pub fn train<B: AutodiffBackend>(
+pub fn train<B: AutodiffBackend + Backend<FloatElem = f32>>(
     config: &TrainConfig,
     obs_tensor: ObsTensor<B>,
     device: &B::Device,
@@ -100,7 +107,7 @@ pub fn train<B: AutodiffBackend>(
 /// Run the training loop starting from `initial_model`. Used by the M5 warm-start
 /// path so the caller can hand in a model whose parameters were transferred from
 /// a fitted [`snlds_msm::NeuralMsm`].
-pub fn train_with_model<B: AutodiffBackend>(
+pub fn train_with_model<B: AutodiffBackend + Backend<FloatElem = f32>>(
     config: &TrainConfig,
     initial_model: VariationalSnlds<B>,
     obs_tensor: ObsTensor<B>,
@@ -131,6 +138,7 @@ pub fn train_with_model<B: AutodiffBackend>(
         temperature: config.temperature,
         obs_noise_var: config.obs_noise_var,
         kind: config.kind.clone(),
+        flow_snlds: None,
     };
     snapshot
         .save(&config.output_dir)
@@ -142,15 +150,21 @@ pub fn train_with_model<B: AutodiffBackend>(
 
     let mut history = Vec::with_capacity(config.epochs);
 
+    crate::training_log::log_true_transition_matrix_from_data(
+        &config.data_dir,
+        manifest.num_states,
+    );
+
     for epoch_idx in 0..config.epochs {
         let mut sequence_order: Vec<usize> = (0..num_sequences).collect();
         sequence_order.shuffle(&mut rng);
 
+        let n_batches = sequence_order.chunks(config.batch_size).count();
         let mut epoch_loss_sum = 0.0_f32;
         let mut epoch_recon_sum = 0.0_f32;
         let mut step_count = 0_usize;
 
-        for batch_indices in sequence_order.chunks(config.batch_size) {
+        for (batch_i, batch_indices) in sequence_order.chunks(config.batch_size).enumerate() {
             let batch_obs = gather_batch(obs_full.clone(), batch_indices);
 
             let output = model.forward(
@@ -163,9 +177,32 @@ pub fn train_with_model<B: AutodiffBackend>(
             let recon_value = scalar_value(&output.recon_loss);
             let loss_value = scalar_value(&loss);
 
+            if crate::training_log::should_log_minibatch(config.log_every_batch, batch_i, n_batches)
+            {
+                println!(
+                    "epoch {:04} batch {:04}/{} loss={:.4} recon_log_prob={:.4}",
+                    epoch_idx,
+                    batch_i + 1,
+                    n_batches,
+                    loss_value,
+                    recon_value
+                );
+            }
+
             let gradients = loss.backward();
             let grad_params = GradientsParams::from_grads(gradients, &model);
             model = optimizer.step(config.learning_rate, model, grad_params);
+
+            let t_every = config.transition_log_every_batches;
+            if crate::training_log::should_log_transition_every_n_batches(t_every, batch_i) {
+                crate::training_log::log_learned_transition_matrix(
+                    "",
+                    epoch_idx,
+                    model.q_logits.val(),
+                    config.temperature,
+                    Some((batch_i + 1, n_batches)),
+                );
+            }
 
             epoch_loss_sum += loss_value;
             epoch_recon_sum += recon_value;
@@ -178,9 +215,18 @@ pub fn train_with_model<B: AutodiffBackend>(
             mean_recon: epoch_recon_sum / step_count.max(1) as f32,
         };
         println!(
-            "epoch {:04}: mean_loss={:.4} mean_recon_log_prob={:.4}",
+            "epoch {:04} end: mean_loss={:.4} mean_recon_log_prob={:.4}",
             stats.epoch, stats.mean_loss, stats.mean_recon
         );
+        crate::training_log::log_learned_transition_matrix(
+            "",
+            epoch_idx,
+            model.q_logits.val(),
+            config.temperature,
+            None,
+        );
+
+        log_checkpoint_recon_mse(&model, obs_full.clone(), num_sequences, config, epoch_idx);
 
         if config.checkpoint_every > 0 && (epoch_idx + 1) % config.checkpoint_every == 0 {
             save_checkpoint(&model, &config.output_dir, epoch_idx)?;
@@ -204,6 +250,34 @@ fn gather_batch<B: AutodiffBackend>(obs: Tensor<B, 3>, indices: &[usize]) -> Ten
     Tensor::cat(slices, 0)
 }
 
+fn log_checkpoint_recon_mse<B: AutodiffBackend + Backend<FloatElem = f32>>(
+    model: &VariationalSnlds<B>,
+    obs_full: Tensor<B, 3>,
+    num_sequences: usize,
+    config: &TrainConfig,
+    epoch_idx: usize,
+) {
+    let n = config.batch_size.min(num_sequences);
+    if n == 0 {
+        return;
+    }
+    let idx: Vec<usize> = (0..n).collect();
+    let batch_obs = gather_batch(obs_full, &idx);
+    let out = model.forward(
+        batch_obs.clone(),
+        config.beta,
+        config.obs_noise_var,
+        config.temperature,
+    );
+    let mse = crate::checkpoint_recon::tensor_mean_mse(batch_obs, out.obs_reconstructed);
+    let rmse = mse.sqrt();
+    println!(
+        "checkpoint {:04} recon_mse={:.6} recon_rmse={:.6}",
+        epoch_idx, mse, rmse
+    );
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
 fn scalar_value<B: AutodiffBackend>(tensor: &Tensor<B, 1>) -> f32 {
     tensor
         .clone()
@@ -225,4 +299,119 @@ fn save_checkpoint<B: AutodiffBackend>(
         .save_file(path.clone(), &recorder)
         .with_context(|| format!("save checkpoint {:?}", path))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod transition_log_schedule_tests {
+    use super::{train, TrainConfig};
+    use crate::data::load_train_obs;
+    use crate::training_log;
+    use burn::backend::ndarray::NdArrayDevice;
+    use burn::backend::{Autodiff, NdArray};
+    use serial_test::serial;
+    use snlds_data::{
+        generate_train_test, save_train_test, GenConfig, Manifest, SimulatorKind,
+        MANIFEST_SCHEMA_VERSION,
+    };
+    use snlds_model::EncoderKind;
+    use std::path::Path;
+
+    type B = Autodiff<NdArray<f32>>;
+
+    fn tiny_train_dir(dir: &Path) {
+        let cfg = GenConfig {
+            seed: 7,
+            num_states: 3,
+            dim_obs: 4,
+            dim_latent: 2,
+            seq_length: 5,
+            num_samples: 4,
+            sparsity_prob: 0.0,
+            kind: SimulatorKind::Poly,
+            poly_degree: 2,
+            ..GenConfig::default()
+        };
+        let manifest = Manifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            seed: cfg.seed,
+            num_states: cfg.num_states,
+            dim_obs: cfg.dim_obs,
+            dim_latent: cfg.dim_latent,
+            seq_length: cfg.seq_length,
+            num_samples: cfg.num_samples,
+            sparsity_prob: cfg.sparsity_prob,
+            data_type: "poly".into(),
+            degree: Some(cfg.poly_degree),
+            init_noise_std: cfg.init_noise_std,
+            init_mean_std: cfg.init_mean_std,
+            transition_step_var: cfg.transition_step_var,
+            emission_hidden_dim: cfg.emission_hidden_dim,
+        };
+        let train_test = generate_train_test(&cfg).expect("generate");
+        save_train_test(dir, &train_test, &manifest).expect("save");
+    }
+
+    #[test]
+    #[serial]
+    fn transition_log_every_batch_triggers_mid_epoch_q() {
+        training_log::reset_q_log_counters_for_test();
+        let data_dir = tempfile::tempdir().expect("data");
+        let output_dir = tempfile::tempdir().expect("out");
+        tiny_train_dir(data_dir.path());
+        let device = NdArrayDevice::default();
+        let obs = load_train_obs::<B>(data_dir.path(), &device).expect("load");
+        let config = TrainConfig {
+            data_dir: data_dir.path().into(),
+            output_dir: output_dir.path().into(),
+            epochs: 1,
+            batch_size: 1,
+            transition_log_every_batches: 1,
+            checkpoint_every: 0,
+            log_every_batch: 0,
+            learning_rate: 3e-4,
+            beta: 1.0,
+            temperature: 1.0,
+            grad_clip: 1.0,
+            hidden_dim: 8,
+            obs_noise_var: 5e-4,
+            seed: 0,
+            resume_from: None,
+            kind: EncoderKind::Mlp,
+        };
+        train(&config, obs, &device).expect("train");
+        assert_eq!(training_log::q_log_mid_epoch_count_for_test(), 4);
+        assert_eq!(training_log::q_log_epoch_end_count_for_test(), 1);
+    }
+
+    #[test]
+    #[serial]
+    fn transition_log_every_two_batches() {
+        training_log::reset_q_log_counters_for_test();
+        let data_dir = tempfile::tempdir().expect("data");
+        let output_dir = tempfile::tempdir().expect("out");
+        tiny_train_dir(data_dir.path());
+        let device = NdArrayDevice::default();
+        let obs = load_train_obs::<B>(data_dir.path(), &device).expect("load");
+        let config = TrainConfig {
+            data_dir: data_dir.path().into(),
+            output_dir: output_dir.path().into(),
+            epochs: 1,
+            batch_size: 1,
+            transition_log_every_batches: 2,
+            checkpoint_every: 0,
+            log_every_batch: 0,
+            learning_rate: 3e-4,
+            beta: 1.0,
+            temperature: 1.0,
+            grad_clip: 1.0,
+            hidden_dim: 8,
+            obs_noise_var: 5e-4,
+            seed: 0,
+            resume_from: None,
+            kind: EncoderKind::Mlp,
+        };
+        train(&config, obs, &device).expect("train");
+        assert_eq!(training_log::q_log_mid_epoch_count_for_test(), 2);
+        assert_eq!(training_log::q_log_epoch_end_count_for_test(), 1);
+    }
 }

@@ -1,2 +1,4 @@
 identifiable-SDS
 *target*
+out/
+snlds-gen-out

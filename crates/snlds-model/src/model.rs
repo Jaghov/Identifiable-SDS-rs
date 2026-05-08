@@ -1,5 +1,6 @@
 use crate::cnn::{validate_cnn_res, CnnDecoder, CnnDecoderConfig, CnnEncoder, CnnEncoderConfig};
 use crate::mlp::{Mlp, MlpConfig};
+use crate::switching::compute_local_evidence;
 use burn::{
     config::Config,
     module::{Module, Param},
@@ -7,8 +8,6 @@ use burn::{
 };
 use snlds_core::hmm::{log_backward, log_forward};
 use std::f32::consts::PI;
-
-const COV_EPS: f32 = 1e-6;
 
 /// Encoder/decoder family selector for [`SnldsConfig`].
 ///
@@ -22,6 +21,7 @@ const COV_EPS: f32 = 1e-6;
 /// encoder can be added with no churn to `forward()` — every variant ultimately
 /// produces the same `[N*T, 2*latent_dim]` / `[N*T, obs_dim]` interface via
 /// [`SnldsEncoder`] / [`SnldsDecoder`].
+#[non_exhaustive]
 #[derive(Config, Debug, PartialEq)]
 pub enum EncoderKind {
     /// Two-hidden-layer leaky-ReLU MLP pair (Python `factored` parity).
@@ -306,78 +306,13 @@ impl<B: Backend> VariationalSnlds<B> {
     ///
     /// Returns local evidence `[N, T, K]`.
     fn compute_local_evidence(&self, latent_samples: Tensor<B, 3>) -> Tensor<B, 3> {
-        let [batch_size, seq_len, latent_dim] = latent_samples.dims();
-        let num_states = self.num_states();
-
-        // ── t=0: log p(z_0 | s) under init distribution ──────────────────
-        let z_first = latent_samples
-            .clone()
-            .slice([0..batch_size, 0..1, 0..latent_dim])
-            .reshape([batch_size, latent_dim]); // [N, latent_dim]
-
-        let init_var = self.init_cov_factor.val().powf_scalar(2.0_f32) + COV_EPS; // [K, latent_dim]
-
-        // log p(z_0 | s=k) for each k: [N, K]
-        let init_log_prob = diagonal_mvn_log_prob_all_states(
-            z_first,
+        compute_local_evidence(
+            latent_samples,
+            &self.transition_nets,
             self.init_mean.val(),
-            init_var,
-            batch_size,
-            num_states,
-            latent_dim,
-        );
-        let init_log_prob = init_log_prob.unsqueeze_dim::<3>(1); // [N, 1, K]
-
-        if seq_len == 1 {
-            return init_log_prob;
-        }
-
-        // ── t>0: log p(z_t | z_{t-1}, s=k) for each k ───────────────────
-        let z_prev = latent_samples
-            .clone()
-            .slice([0..batch_size, 0..seq_len - 1, 0..latent_dim]); // [N, T-1, latent_dim]
-
-        let emission_var = self.emission_cov_factor.val().powf_scalar(2.0_f32) + COV_EPS; // [K, latent_dim]
-
-        // Compute transition means for every state:  means[n, t, k, :] = net_k(z_{t-1}[n,t])
-        let transition_means = {
-            let flat_prev = z_prev.reshape([batch_size * (seq_len - 1), latent_dim]);
-            let per_state: Vec<Tensor<B, 2>> = self
-                .transition_nets
-                .iter()
-                .map(|net| net.forward(flat_prev.clone())) // [N*(T-1), latent_dim]
-                .collect();
-            // Stack to [N*(T-1), K, latent_dim]
-            Tensor::stack(per_state, 1)
-        };
-
-        // z_t expanded to [N*(T-1), K, latent_dim] for comparison with means
-        let z_next = latent_samples
-            .slice([0..batch_size, 1..seq_len, 0..latent_dim])
-            .reshape([batch_size * (seq_len - 1), latent_dim])
-            .unsqueeze_dim::<3>(1)
-            .expand([batch_size * (seq_len - 1), num_states, latent_dim]);
-
-        // emission_var: [K, latent_dim] → [1, K, latent_dim]
-        let emission_var_exp = emission_var.unsqueeze::<3>().expand([
-            batch_size * (seq_len - 1),
-            num_states,
-            latent_dim,
-        ]);
-
-        let diff = z_next - transition_means;
-        let log_2pi = (2.0_f32 * PI).ln();
-        let transition_log_prob = (emission_var_exp.clone().log()
-            + diff.powf_scalar(2.0_f32) / emission_var_exp
-            + log_2pi)
-            .sum_dim(2)
-            .reshape([batch_size * (seq_len - 1), num_states])
-            * -0.5_f32;
-
-        let transition_log_prob =
-            transition_log_prob.reshape([batch_size, seq_len - 1, num_states]); // [N, T-1, K]
-
-        Tensor::cat(vec![init_log_prob, transition_log_prob], 1) // [N, T, K]
+            self.init_cov_factor.val(),
+            self.emission_cov_factor.val(),
+        )
     }
 
     /// ELBO under `inference='alpha'`: sum_t log Z_t / N.
@@ -508,40 +443,4 @@ impl<B: Backend> VariationalSnlds<B> {
             msm_loss,
         }
     }
-}
-
-/// Log p(z; μ_k, diag(σ²_k)) for all K states simultaneously.
-///
-/// - `z_batch`: `[N, latent_dim]`
-/// - `means`: `[K, latent_dim]`
-/// - `variances`: `[K, latent_dim]`  (must be positive)
-///
-/// Returns `[N, K]`.
-fn diagonal_mvn_log_prob_all_states<B: Backend>(
-    z_batch: Tensor<B, 2>,
-    means: Tensor<B, 2>,
-    variances: Tensor<B, 2>,
-    batch_size: usize,
-    num_states: usize,
-    latent_dim: usize,
-) -> Tensor<B, 2> {
-    let log_2pi = (2.0_f32 * PI).ln();
-
-    // Expand z and means/variances to [N, K, latent_dim] for broadcast subtraction.
-    let z_expanded = z_batch
-        .unsqueeze_dim::<3>(1)
-        .expand([batch_size, num_states, latent_dim]);
-    let means_expanded = means
-        .unsqueeze::<3>()
-        .expand([batch_size, num_states, latent_dim]);
-    let var_expanded = variances
-        .unsqueeze::<3>()
-        .expand([batch_size, num_states, latent_dim]);
-
-    let diff = z_expanded - means_expanded;
-    // -0.5 * sum_d [log(2π) + log(σ²_d) + (z_d - μ_d)² / σ²_d]
-    (var_expanded.clone().log() + diff.powf_scalar(2.0_f32) / var_expanded + log_2pi)
-        .sum_dim(2)
-        .reshape([batch_size, num_states])
-        * -0.5_f32
 }

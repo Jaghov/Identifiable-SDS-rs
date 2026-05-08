@@ -110,21 +110,21 @@ pub fn log_backward<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::cpu::CpuDevice;
-    use burn::backend::Cpu;
+    use burn::backend::ndarray::NdArrayDevice;
+    use burn::backend::NdArray;
     use burn::tensor::Tensor;
 
-    type B = Cpu<f32>;
+    type B = NdArray<f32>;
 
-    fn dev() -> CpuDevice {
-        CpuDevice
+    fn dev() -> NdArrayDevice {
+        NdArrayDevice::Cpu
     }
 
-    fn uniform_log(k: usize, device: &CpuDevice) -> Tensor<B, 1> {
+    fn uniform_log(k: usize, device: &NdArrayDevice) -> Tensor<B, 1> {
         Tensor::full([k], -(k as f32).ln(), device)
     }
 
-    fn uniform_log_trans(k: usize, device: &CpuDevice) -> Tensor<B, 2> {
+    fn uniform_log_trans(k: usize, device: &NdArrayDevice) -> Tensor<B, 2> {
         Tensor::full([k, k], -(k as f32).ln(), device)
     }
 

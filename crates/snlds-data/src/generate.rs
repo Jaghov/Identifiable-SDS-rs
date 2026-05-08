@@ -148,6 +148,33 @@ pub fn generate_train_test(cfg: &GenConfig) -> anyhow::Result<TrainTest> {
     generate_split(rng, cfg, n_train, n_test)
 }
 
+/// Generate a single shard (`shard_idx` of `num_shards`).
+///
+/// Splits `num_samples` evenly (remainder goes to the last shard).  Each shard
+/// uses a deterministic sub-RNG derived from `cfg.seed + shard_idx` so shards
+/// can be generated in parallel without affecting reproducibility.
+pub fn generate_shard(
+    cfg: &GenConfig,
+    shard_idx: usize,
+    num_shards: usize,
+) -> anyhow::Result<TrainTest> {
+    assert!(shard_idx < num_shards);
+    let base = cfg.num_samples / num_shards;
+    let remainder = cfg.num_samples % num_shards;
+    let n_train = if shard_idx < remainder {
+        base + 1
+    } else {
+        base
+    };
+    let n_test = if shard_idx == 0 {
+        (cfg.num_samples / 10).max(1)
+    } else {
+        0
+    };
+    let rng = ChaCha8Rng::seed_from_u64(cfg.seed.wrapping_add(shard_idx as u64));
+    generate_split(rng, cfg, n_train, n_test)
+}
+
 /// Validate scalar invariants on `GenConfig` (including `num_states > 0`).
 fn validate_simulator_scalars(cfg: &GenConfig) -> anyhow::Result<()> {
     ensure!(
@@ -218,17 +245,15 @@ fn generate_split(
     n_train: usize,
     n_test: usize,
 ) -> anyhow::Result<TrainTest> {
+    let is_image = matches!(cfg.observation, ObservationKind::Image { .. });
     validate_simulator_scalars(cfg)?;
     let q_true = get_trans_mat(&cfg.transition, cfg.num_states)?;
     let pi = resolved_pi(cfg)?;
     let (latents_train, obs_train_raw, states_train) =
-        roll_sequences(&mut rng, cfg, n_train, &pi, &q_true);
+        roll_sequences(&mut rng, cfg, n_train, &pi, &q_true, is_image);
     let (latents_test, obs_test_raw, states_test) =
-        roll_sequences(&mut rng, cfg, n_test, &pi, &q_true);
+        roll_sequences(&mut rng, cfg, n_test, &pi, &q_true, is_image);
 
-    // For ObservationKind::Image the leaky-ReLU emission output is discarded and
-    // replaced with rendered RGB frames flattened to [N, T, res*res*3]. The model
-    // side will reshape back to [N*T, 3, res, res] inside the CNN encoder.
     let (obs_train, obs_test) = match cfg.observation {
         ObservationKind::Vector => (obs_train_raw, obs_test_raw),
         ObservationKind::Image { res } => (
@@ -315,6 +340,7 @@ fn roll_sequences(
     n: usize,
     pi: &[f32],
     q: &Array2<f32>,
+    skip_obs: bool,
 ) -> (Array3<f32>, Array3<f32>, Array2<i32>) {
     let seq_len = cfg.seq_length;
     let k = cfg.num_states;
@@ -359,7 +385,8 @@ fn roll_sequences(
     };
 
     let mut latents = Array3::<f32>::zeros((n, seq_len, dim_latent));
-    let mut obs = Array3::<f32>::zeros((n, seq_len, cfg.dim_obs));
+    let obs_dim = if skip_obs { 0 } else { cfg.dim_obs };
+    let mut obs = Array3::<f32>::zeros((n, seq_len, obs_dim));
     let mut states = Array2::<i32>::zeros((n, seq_len));
 
     let init_noise = Normal::new(0.0f32, cfg.init_noise_std)
@@ -384,7 +411,7 @@ fn roll_sequences(
             latents[[ni, 0, j]] = init_means[[init_state, j]] + init_noise.sample(rng);
         }
     }
-    {
+    if !skip_obs {
         let obs_t0 = func_leaky_relu_batch(latents.slice(s![.., 0, ..]), &leaky);
         obs.slice_mut(s![.., 0, ..]).assign(&obs_t0);
     }
@@ -419,8 +446,10 @@ fn roll_sequences(
                 latents[[ni, ti, j]] = dyn_mean[j] + step_noise.sample(rng);
             }
         }
-        let obs_t = func_leaky_relu_batch(latents.slice(s![.., ti, ..]), &leaky);
-        obs.slice_mut(s![.., ti, ..]).assign(&obs_t);
+        if !skip_obs {
+            let obs_t = func_leaky_relu_batch(latents.slice(s![.., ti, ..]), &leaky);
+            obs.slice_mut(s![.., ti, ..]).assign(&obs_t);
+        }
     }
 
     (latents, obs, states)

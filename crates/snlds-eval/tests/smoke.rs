@@ -66,6 +66,8 @@ fn eval_after_one_epoch_writes_rrd() {
         temperature: 1.0,
         grad_clip: 1.0,
         checkpoint_every: 1,
+        log_every_batch: 0,
+        transition_log_every_batches: 0,
         hidden_dim: 8,
         obs_noise_var: 5e-4,
         seed: 0,
@@ -93,6 +95,8 @@ fn eval_after_one_epoch_writes_rrd() {
         temperature_override: None,
         obs_noise_var_override: None,
         beta_override: None,
+        w_msm_override: None,
+        w_npca_override: None,
     };
     let eval_device = NdArrayDevice::default();
     run_eval::<EvalBackend>(&eval_config, &eval_device).expect("run_eval");

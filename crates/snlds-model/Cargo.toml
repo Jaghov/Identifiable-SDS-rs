@@ -5,8 +5,12 @@ edition = "2021"
 
 [dependencies]
 snlds-core = { path = "../snlds-core" }
-burn = { version = "0.20.1", features = ["cpu", "autodiff"] }
+glow_flow = { version = "0.1", git = "https://github.com/Jaghov/Glow-rs.git", default-features = false, features = ["backend-ndarray", "backend-tch"] }
+burn = { version = "0.20.1", features = ["tch", "ndarray", "autodiff"] }
 anyhow = "1"
+ndarray = { version = "0.16", features = ["std"] }
+linfa-linalg = "0.2"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 snlds-data = { path = "../snlds-data" }

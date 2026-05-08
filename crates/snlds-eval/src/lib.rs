@@ -18,11 +18,15 @@ use burn::module::Module;
 use burn::record::{CompactRecorder, Recorder};
 use burn::tensor::activation::softmax;
 use burn::tensor::{backend::Backend, Tensor};
+use glow_flow::prelude::TriangularInverse;
 use ndarray::{Array2, Array3, Axis};
 use snlds_data::Manifest;
-use snlds_model::{EncoderKind, SnldsConfig, VariationalSnlds};
+use snlds_model::{
+    CouplingType, EncoderKind, FlowSnlds, FlowSnldsConfig, PcaSvdBackend, SnldsConfig,
+    VariationalSnlds,
+};
 use snlds_train::data::load_train_obs;
-use snlds_train::TrainSnapshot;
+use snlds_train::{FlowSnldsSnapshotMeta, TrainSnapshot};
 use std::path::PathBuf;
 
 /// Resolved hyperparameters used during evaluation. All fields come from the
@@ -38,6 +42,8 @@ pub struct ResolvedHparams {
     /// snapshot so eval rebuilds the same `SnldsConfig` (and thus the same
     /// parameter layout the checkpoint expects).
     pub kind: EncoderKind,
+    /// Present for FlowSNLDS runs (`train_config.json` includes `flow_snlds`).
+    pub flow: Option<FlowSnldsSnapshotMeta>,
 }
 
 /// Configuration for one evaluation run.
@@ -65,9 +71,13 @@ pub struct EvalConfig {
     pub temperature_override: Option<f32>,
     /// Override the snapshot's observation noise variance used in the ELBO.
     pub obs_noise_var_override: Option<f32>,
-    /// Override the snapshot's `beta` weight on the discrete-state ELBO term. Must be
+    /// Override the snapshot's `beta` weight on the discrete-state ELBO term (VariationalSnlds only). Must be
     /// strictly positive so the forward pass populates posteriors.
     pub beta_override: Option<f32>,
+    /// Override FlowSNLDS `w_msm` (must be > 0 for posteriors).
+    pub w_msm_override: Option<f32>,
+    /// Override FlowSNLDS `w_npca`.
+    pub w_npca_override: Option<f32>,
 }
 
 /// Resolve the per-run hyperparameters from the training snapshot, applying any
@@ -86,13 +96,25 @@ pub fn resolve_hparams(config: &EvalConfig) -> anyhow::Result<ResolvedHparams> {
             .obs_noise_var_override
             .unwrap_or(snapshot.obs_noise_var),
         beta: config.beta_override.unwrap_or(snapshot.beta),
-        kind: snapshot.kind,
+        kind: snapshot.kind.clone(),
+        flow: snapshot.flow_snlds.clone(),
     };
-    anyhow::ensure!(
-        hparams.beta > 0.0,
-        "beta must be > 0 to populate posteriors (got {})",
-        hparams.beta,
-    );
+    if hparams.flow.is_some() {
+        let w_msm = config
+            .w_msm_override
+            .unwrap_or_else(|| hparams.flow.as_ref().map(|m| m.w_msm).unwrap_or(1.0));
+        anyhow::ensure!(
+            w_msm > 0.0,
+            "FlowSNLDS eval needs w_msm > 0 to populate posteriors (got {})",
+            w_msm
+        );
+    } else {
+        anyhow::ensure!(
+            hparams.beta > 0.0,
+            "beta must be > 0 to populate posteriors for VariationalSnlds (got {})",
+            hparams.beta,
+        );
+    }
     Ok(hparams)
 }
 
@@ -112,13 +134,15 @@ fn ensure_kind_matches_manifest(kind: &EncoderKind, manifest: &Manifest) -> anyh
 }
 
 /// Run inference + Rerun logging end-to-end.
-pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::Result<()> {
+pub fn run_eval<B: Backend<FloatElem = f32> + TriangularInverse + PcaSvdBackend>(
+    config: &EvalConfig,
+    device: &B::Device,
+) -> anyhow::Result<()> {
     let hparams = resolve_hparams(config)?;
     let obs_tensor = load_train_obs::<B>(&config.data_dir, device)
         .with_context(|| format!("load obs_train from {:?}", config.data_dir))?;
     let manifest = obs_tensor.manifest.clone();
     ensure_kind_matches_manifest(&hparams.kind, &manifest)?;
-    let model = load_checkpoint::<B>(config, &hparams, &manifest, device)?;
 
     let num_seqs = config.sequences.min(manifest.num_samples);
     if num_seqs == 0 {
@@ -135,19 +159,45 @@ pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::
             .clone()
             .slice([0..num_seqs, 0..manifest.seq_length, 0..manifest.dim_obs]);
 
-    let forward_output = model.forward(
-        obs_subset,
-        hparams.beta,
-        hparams.obs_noise_var,
-        hparams.temperature,
-    );
-    let gamma = forward_output
-        .state_posteriors
-        .ok_or_else(|| anyhow::anyhow!("forward produced no posteriors (beta must be > 0)"))?;
-    let x_hat = forward_output.obs_reconstructed;
+    let (q_inferred_tensor, gamma, x_hat) = if let Some(ref meta) = hparams.flow {
+        let model = load_flow_checkpoint::<B>(config, &hparams, &manifest, device)?;
+        let w_msm = config.w_msm_override.unwrap_or(meta.w_msm);
+        let w_npca = config.w_npca_override.unwrap_or(meta.w_npca);
+        let forward_output =
+            model.forward(obs_subset, w_msm, w_npca, hparams.temperature, false);
+        let gamma = forward_output.state_posteriors.ok_or_else(|| {
+            anyhow::anyhow!("forward produced no state posteriors (w_msm must be > 0)")
+        })?;
+        let x_hat = model.decode_observations(
+            forward_output.npca_output.z_pca.clone(),
+            forward_output.npca_output.z_prefix.clone(),
+            &forward_output.npca_output.latent_shapes,
+            forward_output.npca_output.batch_stats.clone(),
+            (num_seqs, manifest.seq_length),
+        );
+        (
+            softmax(model.q_logits.val() / hparams.temperature, 1),
+            gamma,
+            x_hat,
+        )
+    } else {
+        let model = load_variational_checkpoint::<B>(config, &hparams, &manifest, device)?;
+        let forward_output = model.forward(
+            obs_subset,
+            hparams.beta,
+            hparams.obs_noise_var,
+            hparams.temperature,
+        );
+        let gamma = forward_output
+            .state_posteriors
+            .ok_or_else(|| anyhow::anyhow!("forward produced no posteriors (beta must be > 0)"))?;
+        (
+            softmax(model.q_logits.val() / hparams.temperature, 1),
+            gamma,
+            forward_output.obs_reconstructed,
+        )
+    };
 
-    // Q = softmax(q_logits / temperature, dim=-1)  — same convention as the model's forward pass.
-    let q_inferred_tensor = softmax(model.q_logits.val() / hparams.temperature, 1);
     let q_inferred = tensor2_to_array(q_inferred_tensor)?;
     let gamma_array = tensor3_to_array(gamma)?;
     let x_hat_array = tensor3_to_array(x_hat)?;
@@ -199,7 +249,7 @@ pub fn run_eval<B: Backend>(config: &EvalConfig, device: &B::Device) -> anyhow::
     Ok(())
 }
 
-fn load_checkpoint<B: Backend>(
+fn load_variational_checkpoint<B: Backend>(
     config: &EvalConfig,
     hparams: &ResolvedHparams,
     manifest: &Manifest,
@@ -218,6 +268,43 @@ fn load_checkpoint<B: Backend>(
         .load(config.checkpoint.clone(), device)
         .with_context(|| format!("load checkpoint {:?}", config.checkpoint))?;
     Ok(model.load_record(record))
+}
+
+fn load_flow_checkpoint<B: Backend<FloatElem = f32> + PcaSvdBackend>(
+    config: &EvalConfig,
+    hparams: &ResolvedHparams,
+    manifest: &Manifest,
+    device: &B::Device,
+) -> anyhow::Result<FlowSnlds<B>> {
+    let meta = hparams
+        .flow
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("load_flow_checkpoint called without flow snapshot"))?;
+    let coupling_type = match meta.glow_coupling.as_str() {
+        "additive" => CouplingType::Additive,
+        _ => CouplingType::Affine,
+    };
+    let flow_config = FlowSnldsConfig::new(
+        manifest.dim_obs,
+        manifest.dim_latent,
+        hparams.hidden_dim,
+        manifest.num_states,
+        meta.res,
+        meta.glow_levels,
+        meta.glow_steps,
+        meta.glow_hidden_features,
+    )
+    .with_coupling_type(coupling_type)
+    .with_householder_rotation(meta.npca_rotation == "householder")
+    .with_householder_reflectors(meta.npca_householder_reflectors.unwrap_or(32));
+    let mut model: FlowSnlds<B> = flow_config.init(device);
+    let recorder = CompactRecorder::new();
+    let record = recorder
+        .load(config.checkpoint.clone(), device)
+        .with_context(|| format!("load checkpoint {:?}", config.checkpoint))?;
+    model = model.load_record(record);
+    model.npca.sync_training_mode_after_load();
+    Ok(model)
 }
 
 fn tensor2_to_array<B: Backend>(tensor: Tensor<B, 2>) -> anyhow::Result<Array2<f32>> {

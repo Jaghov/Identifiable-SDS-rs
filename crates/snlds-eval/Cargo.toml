@@ -12,7 +12,8 @@ snlds-data = { path = "../snlds-data" }
 snlds-model = { path = "../snlds-model" }
 snlds-train = { path = "../snlds-train" }
 snlds-viz = { path = "../snlds-viz" }
-burn = { version = "0.20.1", features = ["ndarray"] }
+burn = { version = "0.20.1", features = ["tch", "ndarray", "autodiff"] }
+glow_flow = { version = "0.1", git = "https://github.com/Jaghov/Glow-rs.git", default-features = false, features = ["backend-ndarray", "backend-tch"] }
 ndarray = { version = "0.16", features = ["std"] }
 rerun = { version = "0.31", default-features = false, features = ["sdk"] }
 anyhow = "1"
