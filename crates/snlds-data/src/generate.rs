@@ -88,6 +88,20 @@ pub struct GenConfig {
     /// Markov transition matrix topology. Default cyclic `0.9/0.1` matches the historical
     /// hardcoded chain; see [`crate::transitions::get_trans_mat`].
     pub transition: TransitionPattern,
+    /// Size of an **additional** held-out eval split, expressed as a fraction
+    /// of `num_samples`. The eval batch is drawn *after* train and test from
+    /// the same RNG stream and the same simulator parameters; it is **not**
+    /// carved out of `num_samples` — train still receives `num_samples`
+    /// sequences. Eval count per dataset =
+    /// `round(num_samples as f32 * eval_fraction)`; in the sharded path the
+    /// entire eval batch lives in shard 0, matching the test-split pattern.
+    /// Default `0.0` means no eval data is generated and the `obs_eval`,
+    /// `states_eval`, `latents_eval` tensors persist as zero-row arrays so
+    /// the sharded loader can iterate every shard without "tensor not found".
+    /// Validated in `[0.0, 1.0]` by [`generate_train_test`]. Schema v5+
+    /// stores `num_samples_eval` in the manifest so consumers can detect the
+    /// split without inspecting tensor shapes.
+    pub eval_fraction: f32,
 }
 
 impl Default for GenConfig {
@@ -109,6 +123,7 @@ impl Default for GenConfig {
             initial_distribution: None,
             observation: ObservationKind::Vector,
             transition: TransitionPattern::default(),
+            eval_fraction: 0.0,
         }
     }
 }
@@ -122,6 +137,16 @@ pub struct TrainTest {
     pub latents_test: Array3<f32>,
     pub obs_test: Array3<f32>,
     pub states_test: Array2<i32>,
+    /// Held-out evaluation latents `[N_eval, T, D_latent]`. Zero-row when
+    /// `cfg.eval_fraction == 0.0` *or* this shard is not the eval-bearing
+    /// shard (shard 0). Persisted as `latents_eval` since schema v5.
+    pub latents_eval: Array3<f32>,
+    /// Held-out evaluation observations `[N_eval, T, D_obs]`. See
+    /// [`Self::latents_eval`] for zero-row semantics.
+    pub obs_eval: Array3<f32>,
+    /// Held-out evaluation discrete states `[N_eval, T]` (SafeTensors I32 on
+    /// export). See [`Self::latents_eval`] for zero-row semantics.
+    pub states_eval: Array2<i32>,
     /// Ground-truth Markov transition matrix `[K, K]` produced by
     /// [`crate::transitions::get_trans_mat`]. Persisted as `q_true` (F32) since schema v3 so
     /// downstream viz / eval can compare against a learned `Q`.
@@ -144,8 +169,15 @@ pub struct TrainTest {
 pub fn generate_train_test(cfg: &GenConfig) -> anyhow::Result<TrainTest> {
     let n_train = cfg.num_samples;
     let n_test = (cfg.num_samples / 10).max(1);
+    let n_eval = eval_count_for(cfg);
     let rng = ChaCha8Rng::seed_from_u64(cfg.seed);
-    generate_split(rng, cfg, n_train, n_test)
+    generate_split(rng, cfg, n_train, n_test, n_eval)
+}
+
+/// Total eval-split count for `cfg.num_samples` rounded to nearest integer.
+/// Returns `0` when `cfg.eval_fraction == 0.0` (the default).
+pub fn eval_count_for(cfg: &GenConfig) -> usize {
+    (cfg.num_samples as f32 * cfg.eval_fraction).round() as usize
 }
 
 /// Generate a single shard (`shard_idx` of `num_shards`).
@@ -171,8 +203,16 @@ pub fn generate_shard(
     } else {
         0
     };
+    // Eval follows the same shard-0-only pattern as test so the dataset-wide
+    // count = round(num_samples * eval_fraction) regardless of shard count,
+    // matching the `eval_count_for` formula consumers use.
+    let n_eval = if shard_idx == 0 {
+        eval_count_for(cfg)
+    } else {
+        0
+    };
     let rng = ChaCha8Rng::seed_from_u64(cfg.seed.wrapping_add(shard_idx as u64));
-    generate_split(rng, cfg, n_train, n_test)
+    generate_split(rng, cfg, n_train, n_test, n_eval)
 }
 
 /// Validate scalar invariants on `GenConfig` (including `num_states > 0`).
@@ -196,6 +236,11 @@ fn validate_simulator_scalars(cfg: &GenConfig) -> anyhow::Result<()> {
         cfg.transition_step_var.is_finite() && cfg.transition_step_var >= 0.0,
         "transition_step_var must be finite and >= 0 (got {})",
         cfg.transition_step_var
+    );
+    ensure!(
+        cfg.eval_fraction.is_finite() && (0.0..=1.0).contains(&cfg.eval_fraction),
+        "eval_fraction must be finite and in [0, 1] (got {})",
+        cfg.eval_fraction
     );
     if let ObservationKind::Image { res } = cfg.observation {
         ensure!(res > 0, "observation Image.res must be > 0");
@@ -244,21 +289,37 @@ fn generate_split(
     cfg: &GenConfig,
     n_train: usize,
     n_test: usize,
+    n_eval: usize,
 ) -> anyhow::Result<TrainTest> {
     let is_image = matches!(cfg.observation, ObservationKind::Image { .. });
     validate_simulator_scalars(cfg)?;
     let q_true = get_trans_mat(&cfg.transition, cfg.num_states)?;
     let pi = resolved_pi(cfg)?;
+    // The train → test → eval ordering is load-bearing for backwards
+    // compatibility: each `roll_sequences` call advances `rng`, so any
+    // permutation would change the bytes the *earlier* splits see for the
+    // same seed. In particular, adding the third (eval) call here cannot
+    // perturb the train/test bytes because both have already been sampled
+    // by the time `&mut rng` is handed off again. The invariant is pinned
+    // by `eval_fraction_addition_preserves_existing_train_test_bytes` in
+    // `tests/integration.rs`. Note that `roll_sequences` still consumes
+    // RNG to sample its `init_means` / `init_noise` distributions and
+    // (cosine/poly) per-state simulator params even when `n = 0`; that
+    // consumption is invisible because nothing downstream of the third
+    // call reads `rng` again.
     let (latents_train, obs_train_raw, states_train) =
         roll_sequences(&mut rng, cfg, n_train, &pi, &q_true, is_image);
     let (latents_test, obs_test_raw, states_test) =
         roll_sequences(&mut rng, cfg, n_test, &pi, &q_true, is_image);
+    let (latents_eval, obs_eval_raw, states_eval) =
+        roll_sequences(&mut rng, cfg, n_eval, &pi, &q_true, is_image);
 
-    let (obs_train, obs_test) = match cfg.observation {
-        ObservationKind::Vector => (obs_train_raw, obs_test_raw),
+    let (obs_train, obs_test, obs_eval) = match cfg.observation {
+        ObservationKind::Vector => (obs_train_raw, obs_test_raw, obs_eval_raw),
         ObservationKind::Image { res } => (
             render_obs_batch(&latents_train, res),
             render_obs_batch(&latents_test, res),
+            render_obs_batch(&latents_eval, res),
         ),
     };
 
@@ -270,6 +331,9 @@ fn generate_split(
         latents_test,
         obs_test,
         states_test,
+        latents_eval,
+        obs_eval,
+        states_eval,
         q_true,
         pi_true,
     })

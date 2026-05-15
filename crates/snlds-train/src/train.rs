@@ -346,6 +346,7 @@ mod transition_log_schedule_tests {
             init_mean_std: cfg.init_mean_std,
             transition_step_var: cfg.transition_step_var,
             emission_hidden_dim: cfg.emission_hidden_dim,
+            num_samples_eval: 0,
         };
         let train_test = generate_train_test(&cfg).expect("generate");
         save_train_test(dir, &train_test, &manifest).expect("save");
