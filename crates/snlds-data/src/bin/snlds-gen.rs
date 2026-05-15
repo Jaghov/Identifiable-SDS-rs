@@ -148,23 +148,29 @@ fn main() -> Result<()> {
 
     if args.num_shards <= 1 {
         let tt = generate_train_test(&cfg)?;
+        let n_train = tt.obs_train.shape()[0];
+        let n_test = tt.obs_test.shape()[0];
         let n_eval = tt.obs_eval.shape()[0];
         let manifest = make_manifest(cfg.num_samples, n_eval);
         save_train_test(&args.out, &tt, &manifest)?;
         eprintln!(
-            "Wrote sequences.safetensors + metadata.json under {:?} (train={}, eval={})",
-            args.out, cfg.num_samples, n_eval,
+            "Wrote sequences.safetensors + metadata.json under {:?} (train={}, test={}, eval={})",
+            args.out, n_train, n_test, n_eval,
         );
     } else {
         for shard in 0..args.num_shards {
             eprintln!("Generating shard {}/{} ...", shard + 1, args.num_shards);
             let tt = generate_shard(&cfg, shard, args.num_shards)?;
-            let n = tt.obs_train.shape()[0];
+            let n_train = tt.obs_train.shape()[0];
+            let n_test = tt.obs_test.shape()[0];
             let n_eval = tt.obs_eval.shape()[0];
-            let manifest = make_manifest(n, n_eval);
+            let manifest = make_manifest(n_train, n_eval);
             let shard_dir = args.out.join(format!("shard_{:03}", shard));
             save_train_test(&shard_dir, &tt, &manifest)?;
-            eprintln!("  → {:?} ({} train, {} eval)", shard_dir, n, n_eval,);
+            eprintln!(
+                "  → {:?} ({} train, {} test, {} eval)",
+                shard_dir, n_train, n_test, n_eval,
+            );
         }
         eprintln!("Wrote {} shards under {:?}", args.num_shards, args.out);
     }
