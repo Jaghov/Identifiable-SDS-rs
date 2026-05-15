@@ -45,13 +45,33 @@ fn main() -> anyhow::Result<()> {
     let manifest = load_manifest(&manifest_path)
         .with_context(|| format!("load manifest from {manifest_path:?}"))?;
 
-    let (latent_key, obs_key, state_key) = match args.split.as_str() {
-        "train" => ("latents_train", "obs_train", "states_train"),
-        "test" => ("latents_test", "obs_test", "states_test"),
-        other => anyhow::bail!("unknown split {:?}; use train or test", other),
+    let (latent_key, obs_key, state_key, n) = match args.split.as_str() {
+        "train" => (
+            "latents_train",
+            "obs_train",
+            "states_train",
+            manifest.num_samples,
+        ),
+        "test" => (
+            "latents_test",
+            "obs_test",
+            "states_test",
+            (manifest.num_samples / 10).max(1),
+        ),
+        "eval" => (
+            "latents_eval",
+            "obs_eval",
+            "states_eval",
+            manifest.num_samples_eval,
+        ),
+        other => anyhow::bail!("unknown split {other:?}; use train, test, or eval"),
     };
-
-    let n = manifest.num_samples;
+    anyhow::ensure!(
+        n > 0,
+        "split {:?} has 0 sequences in {:?} — point --input at the shard that carries it (e.g. shard_000) or regenerate with the appropriate fraction",
+        args.split,
+        manifest_path,
+    );
     let t = manifest.seq_length;
     let d_lat = manifest.dim_latent;
     let d_obs = manifest.dim_obs;
