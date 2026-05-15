@@ -5,7 +5,7 @@ use snlds_data::{
     generate_train_test, save_train_test, GenConfig, Manifest, SimulatorKind,
     MANIFEST_SCHEMA_VERSION,
 };
-use snlds_eval::{run_eval, EvalConfig};
+use snlds_eval::{run_eval, DataSplit, EvalConfig};
 use snlds_train::{load_train_obs, train, TrainConfig};
 use std::process::Command;
 
@@ -40,6 +40,7 @@ fn tiny_data(dir: &std::path::Path) -> Manifest {
         init_mean_std: cfg.init_mean_std,
         transition_step_var: cfg.transition_step_var,
         emission_hidden_dim: cfg.emission_hidden_dim,
+        num_samples_eval: 0,
     };
     let train_test = generate_train_test(&cfg).expect("generate tiny data");
     save_train_test(dir, &train_test, &manifest).expect("save tiny data");
@@ -90,6 +91,7 @@ fn eval_after_one_epoch_writes_rrd() {
         checkpoint: checkpoint_path,
         output: rrd_path.clone(),
         spawn: false,
+        split: DataSplit::Train,
         sequences: 2,
         hidden_dim_override: None,
         temperature_override: None,
@@ -97,6 +99,7 @@ fn eval_after_one_epoch_writes_rrd() {
         beta_override: None,
         w_msm_override: None,
         w_npca_override: None,
+        report_accuracy: false,
     };
     let eval_device = NdArrayDevice::default();
     run_eval::<EvalBackend>(&eval_config, &eval_device).expect("run_eval");

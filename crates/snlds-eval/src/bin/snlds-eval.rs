@@ -1,8 +1,27 @@
 use anyhow::Context;
 use burn::backend::LibTorch;
-use clap::Parser;
-use snlds_eval::{run_eval, EvalConfig};
+use clap::{Parser, ValueEnum};
+use snlds_eval::{run_eval, DataSplit, EvalConfig};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SplitArg {
+    Train,
+    Test,
+    /// Held-out evaluation split (schema v5+). Requires the dataset to be
+    /// generated with `snlds-gen --eval-fraction > 0`.
+    Eval,
+}
+
+impl From<SplitArg> for DataSplit {
+    fn from(value: SplitArg) -> Self {
+        match value {
+            SplitArg::Train => DataSplit::Train,
+            SplitArg::Test => DataSplit::Test,
+            SplitArg::Eval => DataSplit::Eval,
+        }
+    }
+}
 
 type Backend = LibTorch<f32>;
 
@@ -30,7 +49,11 @@ struct Cli {
     #[arg(long)]
     spawn: bool,
 
-    /// Number of training sequences to log.
+    /// Dataset split to evaluate against (loaded via Burn's `Dataset` API).
+    #[arg(long, value_enum, default_value_t = SplitArg::Train)]
+    split: SplitArg,
+
+    /// Number of sequences from the chosen split to log.
     #[arg(long, default_value_t = 5)]
     sequences: usize,
 
@@ -57,6 +80,12 @@ struct Cli {
     /// Override FlowSNLDS `w_npca`.
     #[arg(long)]
     w_npca: Option<f32>,
+
+    /// Load the matching `states_*` tensor for the chosen `--split` and
+    /// print a Hungarian-aligned accuracy report comparing argmax(γ) against
+    /// the ground-truth state sequence.
+    #[arg(long)]
+    report_accuracy: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -71,6 +100,7 @@ fn main() -> anyhow::Result<()> {
         checkpoint: cli.checkpoint,
         output: cli.output,
         spawn: cli.spawn,
+        split: cli.split.into(),
         sequences: cli.sequences,
         hidden_dim_override: cli.hidden_dim,
         temperature_override: cli.temperature,
@@ -78,6 +108,7 @@ fn main() -> anyhow::Result<()> {
         beta_override: cli.beta,
         w_msm_override: cli.w_msm,
         w_npca_override: cli.w_npca,
+        report_accuracy: cli.report_accuracy,
     };
     run_eval::<Backend>(&config, &device).context("run snlds-eval")
 }

@@ -37,6 +37,7 @@ fn tiny_cfg() -> (GenConfig, Manifest) {
         init_mean_std: cfg.init_mean_std,
         transition_step_var: cfg.transition_step_var,
         emission_hidden_dim: cfg.emission_hidden_dim,
+        num_samples_eval: 0,
     };
     (cfg, manifest)
 }

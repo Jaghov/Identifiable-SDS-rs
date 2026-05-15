@@ -69,6 +69,14 @@ struct Args {
     /// to the last shard). Keeps peak memory proportional to shard size.
     #[arg(long, default_value_t = 1)]
     num_shards: usize,
+    /// Fraction of `num_samples` reserved for an additional held-out **eval**
+    /// split, generated alongside train/test from the same simulator
+    /// parameters. Default `0.0` (no eval split). Eval count =
+    /// `round(num_samples * eval_fraction)`; in the sharded path the whole
+    /// eval batch lives in `shard_000/`, mirroring how `obs_test` is
+    /// distributed. Set to e.g. `0.1` to mirror the 10% test convention.
+    #[arg(long, default_value_t = 0.0)]
+    eval_fraction: f32,
     #[arg(short, long, default_value = "./snlds-gen-out")]
     out: PathBuf,
 }
@@ -110,10 +118,11 @@ fn main() -> Result<()> {
         kind,
         poly_degree: args.degree,
         observation,
+        eval_fraction: args.eval_fraction,
         ..GenConfig::default()
     };
 
-    let make_manifest = |n_samples: usize| Manifest {
+    let make_manifest = |n_samples: usize, n_eval: usize| Manifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         seed: cfg.seed,
         num_states: cfg.num_states,
@@ -134,34 +143,30 @@ fn main() -> Result<()> {
         init_mean_std: cfg.init_mean_std,
         transition_step_var: cfg.transition_step_var,
         emission_hidden_dim: cfg.emission_hidden_dim,
+        num_samples_eval: n_eval,
     };
 
     if args.num_shards <= 1 {
         let tt = generate_train_test(&cfg)?;
-        let manifest = make_manifest(cfg.num_samples);
+        let n_eval = tt.obs_eval.shape()[0];
+        let manifest = make_manifest(cfg.num_samples, n_eval);
         save_train_test(&args.out, &tt, &manifest)?;
         eprintln!(
-            "Wrote sequences.safetensors + metadata.json under {:?}",
-            args.out
+            "Wrote sequences.safetensors + metadata.json under {:?} (train={}, eval={})",
+            args.out, cfg.num_samples, n_eval,
         );
     } else {
         for shard in 0..args.num_shards {
-            eprintln!(
-                "Generating shard {}/{} ...",
-                shard + 1,
-                args.num_shards
-            );
+            eprintln!("Generating shard {}/{} ...", shard + 1, args.num_shards);
             let tt = generate_shard(&cfg, shard, args.num_shards)?;
             let n = tt.obs_train.shape()[0];
-            let manifest = make_manifest(n);
+            let n_eval = tt.obs_eval.shape()[0];
+            let manifest = make_manifest(n, n_eval);
             let shard_dir = args.out.join(format!("shard_{:03}", shard));
             save_train_test(&shard_dir, &tt, &manifest)?;
-            eprintln!("  → {:?} ({} sequences)", shard_dir, n);
+            eprintln!("  → {:?} ({} train, {} eval)", shard_dir, n, n_eval,);
         }
-        eprintln!(
-            "Wrote {} shards under {:?}",
-            args.num_shards, args.out
-        );
+        eprintln!("Wrote {} shards under {:?}", args.num_shards, args.out);
     }
     Ok(())
 }

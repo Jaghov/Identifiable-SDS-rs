@@ -73,7 +73,22 @@ impl SequenceDataset {
     /// Open the test/validation split (`obs_test`) from a dataset directory.
     /// Returns `Ok(None)` if `obs_test` is not present in the SafeTensors file.
     pub fn open_val(data_dir: &Path) -> anyhow::Result<Option<Self>> {
-        match Self::open_split(data_dir, "obs_test") {
+        Self::open_optional_split(data_dir, "obs_test")
+    }
+
+    /// Open the held-out **eval** split (`obs_eval`) from a dataset directory.
+    /// Returns `Ok(None)` for v4 (or older) datasets that do not carry an
+    /// `obs_eval` tensor, mirroring [`Self::open_val`]'s graceful fallback.
+    /// Schema v5+ datasets generated with `eval_fraction > 0` succeed; v5
+    /// datasets generated with `eval_fraction == 0.0` also return `Ok(None)`
+    /// because [`crate::data::SequenceDataset`]'s writer skips zero-row
+    /// `obs_eval` tensors (see `crates/snlds-data/src/io.rs`).
+    pub fn open_eval(data_dir: &Path) -> anyhow::Result<Option<Self>> {
+        Self::open_optional_split(data_dir, "obs_eval")
+    }
+
+    fn open_optional_split(data_dir: &Path, tensor_name: &str) -> anyhow::Result<Option<Self>> {
+        match Self::open_split(data_dir, tensor_name) {
             Ok(ds) => Ok(Some(ds)),
             Err(e) => {
                 let msg = format!("{e}");
@@ -105,17 +120,18 @@ impl SequenceDataset {
                 .with_context(|| format!("load manifest from {:?}", dir))?;
 
             let st_path = dir.join("sequences.safetensors");
-            let file = std::fs::File::open(&st_path)
-                .with_context(|| format!("open {:?}", st_path))?;
+            let file =
+                std::fs::File::open(&st_path).with_context(|| format!("open {:?}", st_path))?;
             // SAFETY: we don't modify the file while it's mapped.
-            let mmap = unsafe { Mmap::map(&file) }
-                .with_context(|| format!("mmap {:?}", st_path))?;
+            let mmap =
+                unsafe { Mmap::map(&file) }.with_context(|| format!("mmap {:?}", st_path))?;
 
             let (header_len, n) = {
                 let st = SafeTensors::deserialize(&mmap)
                     .with_context(|| format!("parse safetensors header {:?}", st_path))?;
-                let tv = st.tensor(tensor_name)
-                    .with_context(|| format!("tensor {} not found in {:?}", tensor_name, st_path))?;
+                let tv = st.tensor(tensor_name).with_context(|| {
+                    format!("tensor {} not found in {:?}", tensor_name, st_path)
+                })?;
                 let data_ptr = tv.data().as_ptr();
                 let offset = unsafe { data_ptr.offset_from(mmap.as_ptr()) as usize };
                 let n_seqs = tv.shape()[0];
@@ -145,8 +161,13 @@ impl SequenceDataset {
             });
         }
 
-        let mut manifest =
-            combined_manifest.ok_or_else(|| anyhow!("no non-empty shards found"))?;
+        let mut manifest = combined_manifest.ok_or_else(|| {
+            anyhow!(
+                "no shards under {:?} contained a {} tensor",
+                dirs,
+                tensor_name,
+            )
+        })?;
         manifest.num_samples = total_n;
 
         eprintln!(
@@ -157,10 +178,7 @@ impl SequenceDataset {
         );
 
         Ok(Self {
-            inner: Arc::new(SequenceDatasetInner {
-                shards,
-                cumulative,
-            }),
+            inner: Arc::new(SequenceDatasetInner { shards, cumulative }),
             manifest,
         })
     }
